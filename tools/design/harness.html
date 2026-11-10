@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="de"><head><meta charset="UTF-8">
+<!-- Lädt den Soft-White-Prototyp ohne Studio-Rahmen in genau 800×480, mit lokaler Manrope-Schrift.
+     Wird von extract.js ferngesteuert. Der Prototyp selbst bleibt unverändert. -->
+<style>@font-face{font-family:Manrope;src:url(../../design/soft-white/Manrope-VF.ttf) format('truetype');font-weight:200 800}</style>
+<link rel="stylesheet" href="style-local.css">
+<style>
+html,body{margin:0!important;padding:0!important;width:800px;height:480px;overflow:hidden;background:#eeede9!important}
+.studio{padding:0!important;margin:0!important;max-width:none!important;width:800px!important}
+.studio-head,.studio-foot,.hint{display:none!important}
+.stage{position:relative!important;width:800px!important;height:480px!important;margin:0!important;padding:0!important}
+.device{transform:none!important;border-radius:0!important;box-shadow:none!important;top:0!important;left:0!important;filter:none!important}
+*,*:before,*:after{transition:none!important;animation:none!important;caret-color:transparent!important}
+</style></head><body>
+<div class="studio"><header class="studio-head"></header><div class="stage" id="stage"><div class="device" id="device"><div id="app"></div><div id="modal-root"></div><div id="toast" role="status"></div></div></div><footer class="studio-foot"><button id="scenario"></button><button id="reset"></button><button id="fullscreen"></button></footer></div>
+<script>try{localStorage.clear()}catch(e){}
+/* feste Uhrzeit (22:00) für reproduzierbare Messungen ("Fertig um") */
+(()=>{const T=new Date(2026,10,10,22,0,0).getTime();const D=Date;window.Date=class extends D{constructor(...a){a.length?super(...a):super(T)}static now(){return T}};})();</script>
+<script src="../../design/soft-white/prototype/app.js"></script>
+</body></html>

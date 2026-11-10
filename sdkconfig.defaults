@@ -9,5 +9,15 @@ CONFIG_ESP32S3_DATA_CACHE_64KB=y
 CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 # LVGL über Kconfig, kein lv_conf.h
 CONFIG_LV_CONF_SKIP=y
-# Platz für die App (LVGL ist groß); eigene Partitionstabelle kommt mit WLAN/OTA
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# Eigene Partitionstabelle: 8 MB App (Schriften + Schattenmasken der Soft-White-Oberfläche)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# Soft White: Verläufe in beliebigem Winkel (CSS linear-gradient), Speicher aus dem großen PSRAM
+CONFIG_LV_USE_DRAW_SW_COMPLEX_GRADIENTS=y
+CONFIG_LV_USE_CLIB_MALLOC=y
+CONFIG_LV_USE_CLIB_STRING=y
+CONFIG_LV_USE_CLIB_SPRINTF=y
+CONFIG_LV_USE_FLOAT=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# Debug-Kanal: Bildschirm-Schnappschuss über USB (tools/sim/device_snap.py)
+CONFIG_LV_USE_SNAPSHOT=y
