@@ -1,0 +1,19 @@
+name: Firmware bauen
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ESP-IDF bauen
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.0
+          target: esp32s3
+          command: idf.py build && idf.py merge-bin -o firmware.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: build/firmware.bin
