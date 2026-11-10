@@ -97,7 +97,7 @@ def slug(s, n=28):
 
 
 def cstr(s):
-    return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    return '"' + s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') + '"'
 
 
 def c_bytes(b):
@@ -374,8 +374,80 @@ def gen_screen(name):
             rx, ry = rel(jround(e['x']) + ox, jround(e['y']) + ox, pe)
             add(dict(kind='SW_N_IMG', parent=pidx, x=rx, y=ry, w=w, h=h, img=im, key=keyname(e, 'img:')), 'IMG')
             continue
-        if e['tag'] in ('input', 'select', 'option', 'label') and e['tag'] != 'label':
-            print(f'  {name}: Formular-Element {e["tag"]} {e["attrs"].get("type")} noch nicht umgesetzt', file=sys.stderr)
+        if e['tag'] == 'option':
+            continue
+        if e['tag'] == 'input' and e['attrs'].get('type') == 'range':
+            rx, ry = rel(x, y, pe)
+            parts = {}
+            for v in ('min', 'max', 'thumb'):
+                lk = find_layer(kind='range', w=w, h=h, v=v)
+                parts[v] = np.array(Image.open(os.path.join(OUT, 'layers', LAYERS[lk]['file'])).convert('RGBA'))
+            alpha = sum(p_[:, :, 3].astype(int) for p_ in parts.values())
+            rows = np.where(alpha.max(1) > 0)[0]
+            r0, r1 = int(rows[0]), int(rows[-1]) + 1
+            cx = 8 + (w - 16) * 0.5
+            names_ = {}
+            for v in ('min', 'max'):
+                cn = f'sw_range_{v}_{w}'
+                if cn not in ASSETS:
+                    argb_image(cn, Image.fromarray(parts[v][r0:r1]))
+                    ASSETS[cn] = cn
+                names_[v] = cn
+            cn = f'sw_range_thumb_{w}'
+            tx0 = int(math.floor(cx - 9))
+            if cn not in ASSETS:
+                argb_image(cn, Image.fromarray(parts['thumb'][r0:r1, tx0:tx0 + 18]))
+                ASSETS[cn] = cn
+            names_['thumb'] = cn
+            a = e['attrs']
+            add(dict(kind='SW_N_RANGE', parent=pidx, x=rx, y=ry, w=w, h=h, img=names_['min'], img2=names_['max'],
+                     img3=names_['thumb'], img_y=r0, vmin=int(a['min'] or 0), vmax=int(a['max'] or 100),
+                     vstep=int(a['step'] or 1), value=int(float(a['value'])), field=e['field'],
+                     key='field:' + (e['field'] or 'range')), 'F_' + slug(e['field'] or 'range'))
+            continue
+        if e['tag'] == 'input' and e['attrs'].get('type') == 'color':
+            rx, ry = rel(x, y, pe)
+            lk = find_layer(kind='color', w=w, h=h, value=e['attrs']['value'])
+            cn = f'sw_color_{lk}'
+            if cn not in ASSETS:
+                argb_image(cn, Image.open(os.path.join(OUT, 'layers', LAYERS[lk]['file'])))
+                ASSETS[cn] = cn
+            add(dict(kind='SW_N_IMG', parent=pidx, x=rx, y=ry, w=w, h=h, img=cn, field=e['field'], key='field:' + (e['field'] or 'color')))
+            continue
+        if e['tag'] in ('input', 'select'):
+            # Feld: eingelassene Fläche + Wert/Platzhalter (+ Pfeil der Auswahlliste)
+            rx, ry = rel(x, y, pe)
+            a = e['attrs']
+            sel = e['tag'] == 'select'
+            n = dict(kind='SW_N_BOX', parent=pidx, x=rx, y=ry, w=w, h=h, container=1, st=style_for(dict(e['st']), w, h),
+                     action=('select:' + (e['field'] or '')) if sel else None, field=e['field'],
+                     key='field:' + (e['field'] or e['tag']))
+            if sel:
+                n['options'] = '\n'.join(a['options'] or [])
+                n['sel_index'] = a['selectedIndex'] or 0
+            bi = add(n, 'F_' + slug(e['field'] or e['tag']))
+            val = a['value'] if not sel else (a['options'] or [''])[a['selectedIndex'] or 0]
+            ph = not val and a.get('placeholder')
+            txt = ('•' * len(val) if a.get('type') == 'password' else val) if val else (a.get('placeholder') or '')
+            if txt:
+                fname, ls, yoff = font_for(e['st']['font'])
+                col = rgba(a['phColor'] if ph else e['st']['color'])
+                fsz = float(e['st']['font'].split('|')[0][:-2])
+                top = (h - ASC * fsz - 600 / 2000 * fsz) / 2 + yoff
+                # Chrome: Text im select 4 px weiter innen als im input (gemessen)
+                add(dict(kind='SW_N_LABEL', parent=bi, x=jround((22 if sel else 18) * 16), y=jround(top), w=0, h=0, font=fname, color=col,
+                         opa=col[3], ls=ls, key='text:field:' + (e['field'] or e['tag']), text=txt, align='SW_AL_LEFT'))
+            if sel:
+                lk = find_layer(kind='arrow', w=w, h=h, radius=e['st']['radius'])
+                ar = np.array(Image.open(os.path.join(OUT, 'layers', LAYERS[lk]['file'])))[:, :, 3]
+                ys, xs = np.where(ar > 0)
+                cn = f'sw_arrow_{w}_{h}'
+                if cn not in ASSETS:
+                    a8_image(cn, ar[ys.min():ys.max() + 1, xs.min():xs.max() + 1])
+                    ASSETS[cn] = cn
+                add(dict(kind='SW_N_ICON', parent=bi, x=int(xs.min()), y=int(ys.min()), w=0, h=0, color=(51, 51, 51, 255),
+                         img=cn, key='icon:field:' + (e['field'] or 'select')))
+            node_of[e['i']] = bi
             continue
         box = has_box(e['st'])
         sw = 'switch' in e['cls'].split()
@@ -457,6 +529,12 @@ def gen_screen(name):
             f'.text = {cstr(n["text"]) if n.get("text") else "NULL"}',
             f'.img = {("&" + n["img"]) if n.get("img") else "NULL"}',
             f'.key = {cstr(n["key"]) if n.get("key") else "NULL"}',
+            f'.field = {cstr(n["field"]) if n.get("field") else "NULL"}',
+            f'.img2 = {("&" + n["img2"]) if n.get("img2") else "NULL"}',
+            f'.img3 = {("&" + n["img3"]) if n.get("img3") else "NULL"}',
+            f'.img_y = {n.get("img_y", 0)}', f'.vmin = {n.get("vmin", 0)}', f'.vmax = {n.get("vmax", 0)}',
+            f'.vstep = {n.get("vstep", 0)}', f'.value = {n.get("value", 0)}',
+            f'.options = {cstr(n["options"]) if n.get("options") else "NULL"}', f'.sel_index = {n.get("sel_index", 0)}',
         ]) + ' },')
     cn = f'sw_scr_{name}'
     screen_c.append(f'static const sw_node_t {cn}_nodes[] = {{\n' + '\n'.join(rows) + '\n};\n'

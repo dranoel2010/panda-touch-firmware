@@ -53,7 +53,12 @@ for (const name of screens) {
       const job = { kind: 'icon', w: b.w, h: b.h, sw: e.st.strokeWidth, paths };
       jobs.set(key(job), job);
     }
-    if (e.tag === 'img' && false) {}
+    // Formularelemente: nativer Schieberegler (leer/voll/Knopf), Pfeil der Auswahlliste, Farbfeld
+    if (e.tag === 'input' && e.attrs.type === 'range') {
+      for (const v of ['min', 'max', 'thumb']) { const job = { kind: 'range', w: b.w, h: b.h, v }; jobs.set(key(job), job); }
+    }
+    if (e.tag === 'select') { const job = { kind: 'arrow', w: b.w, h: b.h, radius: e.st.radius }; jobs.set(key(job), job); }
+    if (e.tag === 'input' && e.attrs.type === 'color') { const job = { kind: 'color', w: b.w, h: b.h, value: e.attrs.value }; jobs.set(key(job), job); }
     if (e.tag === 'img') {
       const job = { kind: 'img', w: e.w, h: e.h, src: e.attrs.src, filter: e.st.filter, fit: 'contain' };
       jobs.set(key(job), job);
@@ -98,6 +103,25 @@ addShadowJobs(40, 40, '50%', 'rgba(126, 132, 122, 0.44) 3px 3px 5px 0px');
     } else if (j.kind === 'icon') {
       await page.evaluate(j => {
         document.getElementById('stage').innerHTML = `<svg width="${j.w}" height="${j.h}" viewBox="0 0 24 24" style="position:absolute;left:0;top:0;fill:none;stroke:#000;stroke-width:${j.sw};stroke-linecap:round;stroke-linejoin:round">${j.paths.map(d => `<path d="${d}"/>`).join('')}</svg>`;
+      }, j);
+      clip = { x: 0, y: 0, width: j.w, height: j.h };
+      index[k] = { ...j, file: k + '.png', ox: 0, oy: 0 };
+    } else if (j.kind === 'range') {
+      await page.evaluate(j => {
+        const val = j.v === 'min' ? 0 : j.v === 'max' ? 100 : 50;
+        document.getElementById('stage').innerHTML = `<input type="range" min="0" max="100" value="${val}" style="position:absolute;left:0;top:0;margin:0;width:${j.w}px;height:${j.h}px;accent-color:#1286ef;touch-action:pan-y">`;
+      }, j);
+      clip = { x: 0, y: 0, width: j.w, height: j.h };
+      index[k] = { ...j, file: k + '.png', ox: 0, oy: 0 };
+    } else if (j.kind === 'arrow') {
+      await page.evaluate(j => {
+        document.getElementById('stage').innerHTML = `<select style="position:absolute;left:0;top:0;margin:0;width:${j.w}px;height:${j.h}px;min-height:60px;border:0;border-radius:${j.radius};background:transparent;box-shadow:none;color:#333;padding:12px 18px;font:18px Manrope"><option></option></select>`;
+      }, j);
+      clip = { x: 0, y: 0, width: j.w, height: j.h };
+      index[k] = { ...j, file: k + '.png', ox: 0, oy: 0 };
+    } else if (j.kind === 'color') {
+      await page.evaluate(j => {
+        document.getElementById('stage').innerHTML = `<input type="color" value="${j.value}" style="position:absolute;left:0;top:0;margin:0;width:${j.w}px;height:${j.h}px;background:transparent;border:0">`;
       }, j);
       clip = { x: 0, y: 0, width: j.w, height: j.h };
       index[k] = { ...j, file: k + '.png', ox: 0, oy: 0 };

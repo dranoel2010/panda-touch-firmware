@@ -139,6 +139,9 @@ static fn_t busy_cb;
 
 static void render(void);
 static void go(route_t r) { route = r; render(); }
+static void set_select(const char *field, int index);
+static int timeout_index(void);
+static int wifi_index;
 
 static int key(const char *k) { return scr ? sw_key(scr->def, k) : -1; }
 static void set_key_text(const char *k, const char *txt) { int i = key(k); if (i >= 0) sw_set_text(scr, i, txt); }
@@ -446,6 +449,13 @@ static void patch(void)
         break;
     case R_FANS:
         select_action("toggle:light", s.light);
+        for (int i = 0; i < 3; i++) {
+            char k[32];
+            snprintf(k, sizeof(k), "field:fan:%d", i);
+            if (key(k) >= 0) sw_range_set(scr, key(k), s.fans[i]);
+            snprintf(k, sizeof(k), i ? "text:row/strong#%d" : "text:row/strong", i + 1);
+            set_key_textf(k, "%d %%", s.fans[i]);
+        }
         break;
     case R_HISTORY:
         for (int i = 0; i < 2 && i < s.n_history; i++) {
@@ -458,8 +468,12 @@ static void patch(void)
         }
         break;
     case R_CONNECTION:
+        set_select("wifi", wifi_index);
         set_action_text("toggle:developer", s.developer ? "Developer Mode: an" : "Developer Mode: aus");
         select_action("toggle:developer", s.developer);
+        break;
+    case R_SETUP:
+        set_select("wifi", wifi_index);
         break;
     case R_POWER:
         set_key_text("text:big-number", s.power ? "Eingeschaltet" : "Ausgeschaltet");
@@ -468,6 +482,8 @@ static void patch(void)
         break;
     case R_SYSTEM:
         set_key_textf("text:row/strong", "%d %%", s.brightness);
+        if (key("field:brightness") >= 0) sw_range_set(scr, key("field:brightness"), s.brightness);
+        set_select("timeout", timeout_index());
         select_action("toggle:sound", s.sound);
         select_action("toggle:night", s.night);
         break;
@@ -497,6 +513,91 @@ static void render(void)
     if (ov_sleep) lv_obj_move_foreground(ov_sleep->root);
     patch();
     apply_backlight();
+}
+
+/* ------------------------------------------------------------------ Formularfelder */
+
+static const int TIMEOUTS[4] = { 0, 1, 5, 15 };
+
+/* i-ter Eintrag einer Auswahlliste ("a\nb\nc") */
+static int option_count(const char *opts)
+{
+    int n = 1;
+    for (const char *p = opts; *p; p++) n += *p == '\n';
+    return n;
+}
+static void option_text(const char *opts, int i, char *buf, size_t n)
+{
+    const char *p = opts;
+    while (i-- > 0 && (p = strchr(p, '\n'))) p++;
+    if (!p) { buf[0] = 0; return; }
+    size_t l = strcspn(p, "\n");
+    if (l >= n) l = n - 1;
+    memcpy(buf, p, l);
+    buf[l] = 0;
+}
+
+static int timeout_index(void)
+{
+    for (int i = 0; i < 4; i++) if (TIMEOUTS[i] == s.timeout_min) return i;
+    return 2;
+}
+
+static void set_select(const char *field, int index)
+{
+    char k[48], txt[48];
+    snprintf(k, sizeof(k), "field:%s", field);
+    int i = key(k);
+    if (i < 0 || !scr->def->nodes[i].options) return;
+    option_text(scr->def->nodes[i].options, index, txt, sizeof(txt));
+    snprintf(k, sizeof(k), "text:field:%s", field);
+    set_key_text(k, txt);
+}
+
+static void select_next(const char *field)
+{
+    char k[48];
+    snprintf(k, sizeof(k), "field:%s", field);
+    int i = key(k);
+    if (i < 0 || !scr->def->nodes[i].options) return;
+    const char *opts = scr->def->nodes[i].options;
+    int n = option_count(opts);
+    if (!strcmp(field, "timeout")) {
+        s.timeout_min = TIMEOUTS[(timeout_index() + 1) % 4];
+        set_select(field, timeout_index());
+        reset_idle();
+    } else if (!strcmp(field, "wifi")) {
+        wifi_index = (wifi_index + 1) % n;
+        set_select(field, wifi_index);
+    } else if (!strcmp(field, "slot-material")) {
+        char cur[8], nxt[8];
+        int idx = 0;
+        for (int j = 0; j < n; j++) {
+            option_text(opts, j, cur, sizeof(cur));
+            if (!strcmp(cur, s.slots[slot_index].material)) idx = j;
+        }
+        option_text(opts, (idx + 1) % n, nxt, sizeof(nxt));
+        snprintf(s.slots[slot_index].material, sizeof(s.slots[slot_index].material), "%s", nxt);
+        render();
+    }
+}
+
+static void on_field(const char *field, int32_t v, const char *text)
+{
+    (void)text;
+    reset_idle();
+    if (!strcmp(field, "brightness")) {
+        s.brightness = v;
+        set_key_textf("text:row/strong", "%d %%", (int)v);
+        apply_backlight();
+    } else if (!strncmp(field, "fan:", 4)) {
+        int i = atoi(field + 4);
+        if (!s.connected) { toast("Drucker offline"); render(); return; }
+        s.fans[i] = v;
+        char k[32];
+        snprintf(k, sizeof(k), i ? "text:row/strong#%d" : "text:row/strong", i + 1);
+        set_key_textf(k, "%d %%", (int)v);
+    }
 }
 
 /* ------------------------------------------------------------------ Aktionen (dispatch) */
@@ -747,6 +848,7 @@ static void dispatch(const char *action)
         if (!strcmp(k, "light")) toast(s.light ? "Licht eingeschaltet" : "Licht ausgeschaltet");
         return;
     }
+    if (!strncmp(action, "select:", 7)) { select_next(action + 7); return; }
     if (!strcmp(action, "pause")) { do_pause(); return; }
     if (!strcmp(action, "ack-finish")) { s.status = ST_IDLE; s.progress = 0; render(); return; }
     if (!strcmp(action, "cancel")) { modal(&sw_scr_modal_cancel, cancel_confirmed); return; }
@@ -942,6 +1044,7 @@ void sw_app_start(lv_obj_t *parent, sw_backlight_cb_t backlight, bool start_asle
     g_backlight = backlight;
     defaults();
     sw_render_set_action_cb(on_action);
+    sw_render_set_field_cb(on_field);
     if (start_asleep) sleep_now();   /* vor dem ersten Bild, damit das Licht nie kurz angeht */
     render();
     lv_timer_create(tick, 2000, NULL);

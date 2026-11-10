@@ -42,7 +42,7 @@ typedef struct {
     lv_opa_t opacity;
 } sw_style_t;
 
-enum { SW_N_BOX = 0, SW_N_LABEL, SW_N_ICON, SW_N_IMG, SW_N_DIVIDER, SW_N_SWITCH };
+enum { SW_N_BOX = 0, SW_N_LABEL, SW_N_ICON, SW_N_IMG, SW_N_DIVIDER, SW_N_SWITCH, SW_N_RANGE };
 enum { SW_AL_LEFT = 0, SW_AL_CENTER, SW_AL_RIGHT };
 
 typedef struct {
@@ -69,6 +69,14 @@ typedef struct {
     const char *text;
     const lv_image_dsc_t *img;  /* Icon (A8) oder Bild */
     const char *key;            /* stabiler Schlüssel aus der Prototyp-Struktur, z. B. "text:remaining/strong" */
+    /* Formularfelder */
+    const char *field;          /* data-field des Prototyps */
+    const lv_image_dsc_t *img2; /* Schieberegler: voll */
+    const lv_image_dsc_t *img3; /* Schieberegler: Knopf */
+    int16_t img_y;              /* Schieberegler: Zeile der Bilder */
+    int16_t vmin, vmax, vstep, value;
+    const char *options;        /* Auswahlliste: Einträge, getrennt durch \n */
+    int8_t sel_index;
 } sw_node_t;
 
 typedef struct {

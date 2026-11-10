@@ -255,6 +255,103 @@ static void apply_variant(lv_obj_t *obj, box_rt_t *rt)
     lv_obj_invalidate(obj);
 }
 
+/* ------------------------------------------------------------------ Schieberegler (input type=range) */
+
+static sw_field_cb_t s_field_cb;
+void sw_render_set_field_cb(sw_field_cb_t cb) { s_field_cb = cb; }
+
+typedef struct {
+    const sw_node_t *n;
+    int32_t value;
+    lv_image_dsc_t left, right;   /* Teilbilder (dauerhaft, da LVGL verzögert zeichnet) */
+} range_rt_t;
+
+static int32_t thumb_cx(const range_rt_t *r, int32_t w)
+{
+    const sw_node_t *n = r->n;
+    return 8 + (int32_t)lround((double)(w - 16) * (r->value - n->vmin) / (n->vmax - n->vmin));
+}
+
+static void range_event(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_current_target_obj(e);
+    range_rt_t *r = lv_event_get_user_data(e);
+    lv_event_code_t code = lv_event_get_code(e);
+    const sw_node_t *n = r->n;
+    if (code == LV_EVENT_DELETE) { lv_free(r); return; }
+    if (code == LV_EVENT_DRAW_MAIN) {
+        lv_layer_t *layer = lv_event_get_layer(e);
+        lv_area_t c;
+        lv_obj_get_coords(obj, &c);
+        int32_t w = lv_area_get_width(c.x1 <= c.x2 ? &c : &c);
+        int32_t cx = thumb_cx(r, w);
+        const lv_image_dsc_t *mx = n->img2, *mn = n->img;
+        /* voll: links bis zur Knopfmitte */
+        r->left = *mx;
+        r->left.header.w = LV_MIN(cx, (int32_t)mx->header.w);
+        lv_draw_image_dsc_t d;
+        lv_draw_image_dsc_init(&d);
+        d.src = &r->left;
+        lv_area_t a = { c.x1, c.y1 + n->img_y, c.x1 + r->left.header.w - 1, c.y1 + n->img_y + mx->header.h - 1 };
+        if (r->left.header.w > 0) lv_draw_image(layer, &d, &a);
+        /* leer: ab der Knopfmitte */
+        r->right = *mn;
+        r->right.header.w = mn->header.w - cx;
+        r->right.data = mn->data + cx * 4;
+        lv_draw_image_dsc_init(&d);
+        d.src = &r->right;
+        lv_area_t b = { c.x1 + cx, a.y1, c.x1 + cx + r->right.header.w - 1, a.y1 + mn->header.h - 1 };
+        if (r->right.header.w > 0) lv_draw_image(layer, &d, &b);
+        /* Knopf */
+        lv_draw_image_dsc_init(&d);
+        d.src = n->img3;
+        lv_area_t k = { c.x1 + cx - 9, a.y1, c.x1 + cx - 9 + n->img3->header.w - 1, a.y1 + n->img3->header.h - 1 };
+        lv_draw_image(layer, &d, &k);
+        return;
+    }
+    if (code == LV_EVENT_PRESSING || code == LV_EVENT_PRESSED) {
+        lv_point_t p;
+        lv_indev_get_point(lv_indev_active(), &p);
+        lv_area_t c;
+        lv_obj_get_coords(obj, &c);
+        int32_t w = lv_area_get_width(&c);
+        double f = (double)(p.x - c.x1 - 8) / (w - 16);
+        if (f < 0) f = 0;
+        if (f > 1) f = 1;
+        int32_t step = n->vstep > 0 ? n->vstep : 1;
+        int32_t v = n->vmin + (int32_t)lround(f * (n->vmax - n->vmin) / step) * step;
+        if (v != r->value) {
+            r->value = v;
+            lv_obj_invalidate(obj);
+            if (s_field_cb && n->field) s_field_cb(n->field, v, NULL);
+        }
+    }
+}
+
+int32_t sw_range_get(sw_screen_t *s, int idx)
+{
+    lv_obj_t *o = sw_obj(s, idx);
+    if (!o) return 0;
+    for (uint32_t i = 0; i < lv_obj_get_event_count(o); i++) {
+        lv_event_dsc_t *d = lv_obj_get_event_dsc(o, i);
+        if (lv_event_dsc_get_cb(d) == range_event) return ((range_rt_t *)lv_event_dsc_get_user_data(d))->value;
+    }
+    return 0;
+}
+
+void sw_range_set(sw_screen_t *s, int idx, int32_t v)
+{
+    lv_obj_t *o = sw_obj(s, idx);
+    if (!o) return;
+    for (uint32_t i = 0; i < lv_obj_get_event_count(o); i++) {
+        lv_event_dsc_t *d = lv_obj_get_event_dsc(o, i);
+        if (lv_event_dsc_get_cb(d) == range_event) {
+            ((range_rt_t *)lv_event_dsc_get_user_data(d))->value = v;
+            lv_obj_invalidate(o);
+        }
+    }
+}
+
 /* ------------------------------------------------------------------ Aufbau */
 
 void sw_render_set_action_cb(sw_action_cb_t cb)
@@ -348,6 +445,19 @@ static sw_screen_t *build(const sw_screen_def_t *def, lv_obj_t *parent, int only
             }
             lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
             break;
+        case SW_N_RANGE: {
+            o = lv_obj_create(p);
+            lv_obj_remove_style_all(o);
+            lv_obj_set_pos(o, n->x, n->y);
+            lv_obj_set_size(o, n->w, n->h);
+            lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE);
+            lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
+            range_rt_t *r = lv_malloc_zeroed(sizeof(*r));
+            r->n = n;
+            r->value = n->value;
+            lv_obj_add_event_cb(o, range_event, LV_EVENT_ALL, r);
+            break;
+        }
         case SW_N_DIVIDER: {   /* 1px Linie + box-shadow 1px 0 #fff */
             o = lv_obj_create(p);
             lv_obj_remove_style_all(o);

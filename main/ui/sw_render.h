@@ -5,6 +5,7 @@
 #include "sw_types.h"
 
 typedef void (*sw_action_cb_t)(const char *action, lv_obj_t *obj);
+typedef void (*sw_field_cb_t)(const char *field, int32_t value, const char *text);
 
 typedef struct {
     const sw_screen_def_t *def;
@@ -16,6 +17,9 @@ typedef struct {
 #define SW_SURFACE lv_color_hex(0xeceee4) /* #eeede9, so gewählt, dass RGB565 die nächste Displayfarbe trifft */
 
 void sw_render_set_action_cb(sw_action_cb_t cb);
+void sw_render_set_field_cb(sw_field_cb_t cb);
+int32_t sw_range_get(sw_screen_t *s, int idx);
+void sw_range_set(sw_screen_t *s, int idx, int32_t v);
 sw_screen_t *sw_screen_build(const sw_screen_def_t *def, lv_obj_t *parent);
 void sw_screen_free(sw_screen_t *s);
 /* Nur einen Teilbaum (Dialog, Toast, Ruhebildschirm) als Ebene über dem Bildschirm aufbauen */
