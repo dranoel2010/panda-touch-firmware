@@ -18,3 +18,4 @@ python3 -m esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX write_flash 0 firm
 
 ## Stand
 - v0.1.0: Display + Touch-Test
+- v0.1.1: Helligkeitsregler (wird gespeichert)
