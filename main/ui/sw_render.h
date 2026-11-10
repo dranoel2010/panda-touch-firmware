@@ -25,6 +25,7 @@ void sw_screen_free(sw_screen_t *s);
 /* Nur einen Teilbaum (Dialog, Toast, Ruhebildschirm) als Ebene über dem Bildschirm aufbauen */
 sw_screen_t *sw_overlay_build(const sw_screen_def_t *def, lv_obj_t *parent, int root_idx);
 int sw_key(const sw_screen_def_t *def, const char *key);
+void sw_debug_press(sw_screen_t *s, const char *action);
 int sw_find_text(const sw_screen_def_t *def, const char *text);
 int sw_find_text_in(const sw_screen_def_t *def, int container, const char *text);
 int sw_find_action(const sw_screen_def_t *def, const char *action);

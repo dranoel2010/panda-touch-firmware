@@ -20,6 +20,7 @@ typedef struct {
     int idx;
     const sw_style_t *override;
 } box_rt_t;
+static box_rt_t *rt_of(lv_obj_t *o);
 
 /* ------------------------------------------------------------------ Masken-Stücke */
 
@@ -126,9 +127,94 @@ static void draw_shadows(lv_layer_t *layer, const sw_style_t *st, const lv_area_
     }
 }
 
+/* ------------------------------------------------------------------ Verläufe mit Dithering
+ * Das Display hat nur RGB565. Ohne Dithering bekommen die feinen Verläufe des Designs Stufen und
+ * Farbstiche (R, G und B springen an verschiedenen Stellen). Daher: CSS-Verlauf in voller Genauigkeit
+ * pro Pixel berechnen und mit geordnetem Dithering (Bayer 4×4) auf RGB565 bringen. Zwischenspeicher im PSRAM. */
+typedef struct grad_img {
+    lv_color_t c1, c2;
+    int16_t angle, w, h;
+    lv_image_dsc_t img;
+    uint32_t used;
+    struct grad_img *next;
+} grad_img_t;
+static grad_img_t *s_grads;
+static uint32_t s_grad_bytes, s_grad_clock;
+#define GRAD_CACHE_MAX (3u * 1024u * 1024u)
+
+static const uint8_t BAYER4[4][4] = { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+
+static const lv_image_dsc_t *grad_image(const sw_style_t *st, int32_t w, int32_t h)
+{
+    s_grad_clock++;
+    for (grad_img_t *g = s_grads; g; g = g->next) {
+        if (g->w == w && g->h == h && g->angle == st->angle && lv_color_eq(g->c1, st->c1) && lv_color_eq(g->c2, st->c2)) {
+            g->used = s_grad_clock;
+            return &g->img;
+        }
+    }
+    uint32_t bytes = (uint32_t)w * h * 2;
+    while (s_grad_bytes + bytes > GRAD_CACHE_MAX && s_grads) {   /* ältesten entfernen */
+        grad_img_t **pp = &s_grads, **old = &s_grads;
+        for (; *pp; pp = &(*pp)->next) if ((*pp)->used < (*old)->used) old = pp;
+        grad_img_t *o = *old;
+        *old = o->next;
+        s_grad_bytes -= (uint32_t)o->w * o->h * 2;
+        lv_free((void *)o->img.data);
+        lv_free(o);
+    }
+    uint16_t *px = lv_malloc(bytes);
+    grad_img_t *g = lv_malloc_zeroed(sizeof(*g));
+    if (!px || !g) { lv_free(px); lv_free(g); return NULL; }
+    double a = st->angle * M_PI / 180.0, dx = sin(a), dy = -cos(a);
+    double len = fabs(w * sin(a)) + fabs(h * cos(a));
+    double r1 = st->c1.red, g1 = st->c1.green, b1 = st->c1.blue;
+    double r2 = st->c2.red, g2 = st->c2.green, b2 = st->c2.blue;
+    for (int32_t y = 0; y < h; y++) {
+        for (int32_t x = 0; x < w; x++) {
+            double t = ((x + 0.5 - w / 2.0) * dx + (y + 0.5 - h / 2.0) * dy) / len + 0.5;
+            if (t < 0) t = 0;
+            if (t > 1) t = 1;
+            double d = (BAYER4[y & 3][x & 3] + 0.5) / 16.0;
+            int r = (int)((r1 + (r2 - r1) * t) * 31.0 / 255.0 + d);
+            int gg = (int)((g1 + (g2 - g1) * t) * 63.0 / 255.0 + d);
+            int b = (int)((b1 + (b2 - b1) * t) * 31.0 / 255.0 + d);
+            px[y * w + x] = (uint16_t)((LV_MIN(r, 31) << 11) | (LV_MIN(gg, 63) << 5) | LV_MIN(b, 31));
+        }
+    }
+    g->c1 = st->c1;
+    g->c2 = st->c2;
+    g->angle = st->angle;
+    g->w = w;
+    g->h = h;
+    g->used = s_grad_clock;
+    g->img.header.magic = LV_IMAGE_HEADER_MAGIC;
+    g->img.header.cf = LV_COLOR_FORMAT_RGB565;
+    g->img.header.w = w;
+    g->img.header.h = h;
+    g->img.header.stride = w * 2;
+    g->img.data = (const uint8_t *)px;
+    g->img.data_size = bytes;
+    g->next = s_grads;
+    s_grads = g;
+    s_grad_bytes += bytes;
+    return &g->img;
+}
+
 static void draw_body(lv_layer_t *layer, const sw_style_t *st, const lv_area_t *c)
 {
     if (st->bg == SW_BG_NONE) return;
+    if (st->bg == SW_BG_LINEAR && st->o1 == 255 && st->o2 == 255) {
+        const lv_image_dsc_t *img = grad_image(st, lv_area_get_width(c), lv_area_get_height(c));
+        if (img) {
+            lv_draw_image_dsc_t d;
+            lv_draw_image_dsc_init(&d);
+            d.src = img;
+            d.clip_radius = st->radius;
+            lv_draw_image(layer, &d, c);
+            return;
+        }
+    }
     lv_draw_rect_dsc_t d;
     lv_draw_rect_dsc_init(&d);
     d.radius = st->radius;
@@ -180,7 +266,7 @@ static void draw_switch_knob(lv_layer_t *layer, lv_obj_t *obj, const lv_area_t *
     k.y2 = k.y1 + 39;
     const sw_mask_t *m = sw_switch_knob_mask();
     if (m) draw_mask(layer, m, k.x1 + m->ox, k.y1 + m->oy, 40 + m->grow_w, 40 + m->grow_h, lv_color_hex(0x78847a), 0x70);
-    static const sw_style_t knob = { SW_BG_LINEAR, LV_COLOR_MAKE(0xf4, 0xfa, 0xf4), LV_COLOR_MAKE(0xe4, 0xe6, 0xe4),
+    static const sw_style_t knob = { SW_BG_LINEAR, LV_COLOR_MAKE(0xfa, 0xfa, 0xf7), LV_COLOR_MAKE(0xe8, 0xe8, 0xe4),
                                      255, 255, 140, 20, 0, 0, LV_COLOR_MAKE(0, 0, 0), 0, 0, NULL,
                                      LV_COLOR_MAKE(0, 0, 0), 0, 255 };
     draw_body(layer, &knob, &k);
@@ -488,6 +574,17 @@ sw_screen_t *sw_overlay_build(const sw_screen_def_t *def, lv_obj_t *parent, int 
     sw_screen_t *s = build(def, parent, root_idx);
     if (s->objs[root_idx]) lv_obj_add_flag(s->objs[root_idx], LV_OBJ_FLAG_CLICKABLE); /* blockiert darunter (inert) */
     return s;
+}
+
+/* Test: Objekt mit dieser Aktion als gedrückt darstellen */
+void sw_debug_press(sw_screen_t *s, const char *action)
+{
+    int i = sw_find_action(s->def, action);
+    lv_obj_t *o = sw_obj(s, i);
+    if (!o) return;
+    lv_obj_add_state(o, LV_STATE_PRESSED);
+    box_rt_t *rt = rt_of(o);
+    if (rt) apply_variant(o, rt);
 }
 
 int sw_key(const sw_screen_def_t *def, const char *key)

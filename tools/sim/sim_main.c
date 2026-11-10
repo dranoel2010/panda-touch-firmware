@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+#include <unistd.h>
+#include <stdlib.h>
 #include "lvgl.h"
 #include "ui/gen/sw_gen_screens.h"
 #include "ui/sw_app.h"
@@ -56,9 +58,16 @@ int main(int argc, char **argv)
     }
     sw_app_start(lv_screen_active(), NULL, false);
     for (int i = 2; i < argc; i++) {
+        if (!strncmp(argv[i], "wait:", 5)) {   /* Zeit vergehen lassen (Timer, Animationen) */
+            int ms = atoi(argv[i] + 5);
+            for (int k = 0; k < ms / 10; k++) { lv_timer_handler(); usleep(10000); }
+            continue;
+        }
         sw_app_debug_go(argv[i]);
         lv_timer_handler();
     }
+    /* Animationen (z. B. Toast 0,2 s) zu Ende laufen lassen */
+    for (int k = 0; k < 40; k++) { lv_timer_handler(); usleep(10000); }
     lv_refr_now(d);
     write_ppm(argv[1]);
     return 0;

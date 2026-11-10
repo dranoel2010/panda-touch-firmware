@@ -35,6 +35,9 @@ def cmd(c, wait=5):
 
 cmd('dark 1')   # nachts: Licht bleibt aus, auch beim Aufwecken
 for a in sys.argv[2:]:
+    if a.startswith('wait:'):
+        time.sleep(int(a[5:]) / 1000)
+        continue
     cmd('go ' + a)
     time.sleep(0.4)
 

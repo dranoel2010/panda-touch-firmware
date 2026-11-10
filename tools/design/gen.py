@@ -46,8 +46,8 @@ def r565(c):
 
 def cc(c, blend=False):
     """blend=True: Farbe wird nur halbtransparent gemischt (Schatten, Abdunklung) -> unverändert lassen"""
-    if not blend and (len(c) < 4 or c[3] == 255):
-        c = r565(c)
+    if not blend:
+        c = r565(c)   # auch halbtransparente Farben: LVGL schneidet sonst auf RGB565 ab (Farbstich)
     return f'LV_COLOR_MAKE(0x{c[0]:02x},0x{c[1]:02x},0x{c[2]:02x})'
 
 
@@ -265,8 +265,12 @@ def style_for(st, w, h):
     if shadows:
         sh_name = f'{n}_sh'
         style_c.append(f'static const sw_shadow_t {sh_name}[] = {{ ' + ', '.join(
-            f'{{ &{m_}, {cc(c, True)}, {c[3]}, {int(i)} }}' for m_, c, i in shadows) + ' };')
-    style_c.append(f'static const sw_style_t {n} = {{ {kind}, {cc(c1)}, {cc(c2)}, {c1[3]}, {c2[3]}, {angle}, {rad}, '
+            f'{{ &{m_}, {cc(c)}, {c[3]}, {int(i)} }}' for m_, c, i in shadows) + ' };')
+    # Verläufe werden mit Dithering gezeichnet -> Originalfarben (nicht auf RGB565-Stufen gesetzt)
+    # halbtransparente Flächen (Abdunklung des Dialogs) ebenfalls unverändert: dort ist das genauer
+    raw = kind == 'SW_BG_LINEAR' or c1[3] < 255
+    gc1, gc2 = (cc(c1, True), cc(c2, True)) if raw else (cc(c1), cc(c2))
+    style_c.append(f'static const sw_style_t {n} = {{ {kind}, {gc1}, {gc2}, {c1[3]}, {c2[3]}, {angle}, {rad}, '
                    f'{bw}, {bbot}, {cc(bc)}, {bc[3]}, {len(shadows)}, {sh_name}, {cc(tc)}, {ty}, {op} }};')
     STYLES[sig] = n
     return n

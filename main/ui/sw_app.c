@@ -1061,4 +1061,19 @@ void sw_app_force_dark(bool on)
 }
 
 /* Für den Simulator: Zustand direkt setzen */
-void sw_app_debug_go(const char *action) { dispatch(action); }
+void sw_app_debug_go(const char *action)
+{
+    if (!strncmp(action, "press:", 6)) { sw_debug_press(scr, action + 6); return; }
+    if (!strcmp(action, "reset")) {   /* Test: Anfangszustand wie nach dem Start (ohne Ruhebildschirm) */
+        close_modal();
+        if (ov_sleep) { sw_screen_free(ov_sleep); ov_sleep = NULL; }
+        if (ov_toast) lv_obj_add_flag(ov_toast->root, LV_OBJ_FLAG_HIDDEN);
+        defaults();
+        file_source = file_index = slot_index = wizard_step = wifi_index = 0;
+        wizard_load = true;
+        route = R_HOME;
+        render();
+        return;
+    }
+    dispatch(action);
+}
