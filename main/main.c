@@ -10,6 +10,7 @@
 #include "esp_lvgl_port.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_system.h"
 #include "nvs_flash.h"
 #include "bsp/pandatouch.h"
 #include "driver/gpio.h"
@@ -150,6 +151,19 @@ static void hintergrundlicht(int prozent)
     if (!esp_timer_is_active(licht_timer)) esp_timer_start_periodic(licht_timer, 10 * 1000);
 }
 
+/* Wächter: hängt die Oberfläche (LVGL-Task läuft nicht mehr), nach 30 s neu starten statt
+ * dauerhaft eingefroren zu bleiben */
+static volatile int64_t lebenszeichen;
+static void lvgl_lebt(lv_timer_t *t) { (void)t; lebenszeichen = esp_timer_get_time(); }
+static void waechter(void *arg)
+{
+    (void)arg;
+    if (lebenszeichen && esp_timer_get_time() - lebenszeichen > 30 * 1000000LL) {
+        ESP_LOGE(TAG, "Oberfläche reagiert seit 30 s nicht – Neustart");
+        esp_restart();
+    }
+}
+
 void app_main(void)
 {
     nvs_starten();
@@ -165,9 +179,14 @@ void app_main(void)
         return;
     }
     sw_app_start(lv_screen_active(), hintergrundlicht, true);
+    lebenszeichen = esp_timer_get_time();
+    lv_timer_create(lvgl_lebt, 1000, NULL);
     bsp_display_unlock();
     /* WLAN nach der Oberfläche: deren Objekte sollen im schnellen internen RAM liegen */
     drucker_start();
     sw_debug_start();
+    const esp_timer_create_args_t wa = { .callback = waechter, .name = "waechter" };
+    esp_timer_handle_t wt;
+    if (esp_timer_create(&wa, &wt) == ESP_OK) esp_timer_start_periodic(wt, 5 * 1000000);
     ESP_LOGI(TAG, "Bereit, v%s (Soft White)", VERSION);
 }

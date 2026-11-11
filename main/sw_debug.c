@@ -239,6 +239,13 @@ static void debug_task(void *arg)
             b[l++] = '\n';
             send(b, l);
         }
+        else if (!strcmp(line, "haenge")) {   /* Test des Wächters: Oberfläche 40 s blockieren -> Neustart erwartet */
+            send("OK\n", 3);
+            if (bsp_display_lock(portMAX_DELAY)) {
+                vTaskDelay(pdMS_TO_TICKS(40000));
+                bsp_display_unlock();
+            }
+        }
         else if (!strcmp(line, "i2cscan")) {   /* Geräte auf beiden I2C-Bussen suchen (Akku-Chip?) */
             char b[256];
             int l = snprintf(b, sizeof(b), "I2C0:");
