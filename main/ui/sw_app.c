@@ -227,6 +227,7 @@ static fn_t busy_cb;
 static void render(void);
 static void go(route_t r) { route = r; render(); }
 static void set_select(const char *field, int index);
+static bool need_connection(void);
 static int timeout_index(void);
 static int wifi_index;
 
@@ -717,11 +718,17 @@ static void patch(void)
         break;
 #if LIVE
     case R_MESSAGES:
-        if (s.message == 1) {
+        if (s.message == 1 && dr.fehler) {
             set_key_text("text:panel/h3", "Drucker meldet einen Fehler");
             set_key_textf("text:panel/p", "Fehlercode %04X-%04X. Prüfe den Drucker und lies die Details am", (unsigned)(dr.fehler >> 16),
                           (unsigned)(dr.fehler & 0xffff));
             set_key_text("text:panel/p#2", "Druckerbildschirm oder in der Bambu-App nach.");
+        } else if (s.message == 1) {
+            set_key_text("text:panel/h3", dr.hms_n > 1 ? "Drucker meldet Hinweise" : "Drucker meldet einen Hinweis");
+            set_key_textf("text:panel/p", "HMS %04X_%04X_%04X_%04X. Details stehen am Druckerbildschirm oder in",
+                          (unsigned)(dr.hms_attr >> 16), (unsigned)(dr.hms_attr & 0xffff), (unsigned)(dr.hms_code >> 16),
+                          (unsigned)(dr.hms_code & 0xffff));
+            set_key_text("text:panel/p#2", "der Bambu-App (Suche nach dem HMS-Code).");
         } else if (s.message == 2) {
             set_key_text("text:panel/p", "Prüfe Access Code und Developer Mode am Drucker, dann erneut testen.");
         }
@@ -808,6 +815,10 @@ static void select_next(const char *field)
         }
         option_text(opts, (idx + 1) % n, nxt, sizeof(nxt));
         snprintf(s.slots[slot_index].material, sizeof(s.slots[slot_index].material), "%s", nxt);
+#if LIVE
+        if (!need_connection()) return;
+        drucker_material(slot_index, nxt);
+#endif
         render();
     }
 }
@@ -1151,7 +1162,7 @@ static bool live_dispatch(const char *a)
     }
     if (!strcmp(a, "ack-finish")) { fertig_quittiert = true; return false; }
     if (!strncmp(a, "resolve:", 8) || !strncmp(a, "dismiss:", 8)) {
-        if (s.message == 1) fehler_ausgeblendet = dr.fehler;
+        if (s.message == 1) fehler_ausgeblendet = dr.fehler ? dr.fehler : dr.hms_attr ^ dr.hms_code;
         s.message = 0;
         render();
         toast(a[0] == 'r' ? "Hinweis bestätigt" : "Meldung ausgeblendet");
@@ -1171,7 +1182,7 @@ static bool live_dispatch(const char *a)
     }
     if (!strcmp(a, "wizard-next") && wizard_step == 1) {
         if (wizard_load) drucker_filament_laden(slot_index, temperatur_fuer(s.slots[slot_index].material));
-        else drucker_druck_befehl("unload_filament");
+        else drucker_filament_entladen(temperatur_fuer(s.slot >= 0 && s.slot <= 4 ? s.slots[s.slot].material : "PLA"));
         return false;
     }
     return false;
@@ -1425,8 +1436,9 @@ static void tick(lv_timer_t *t)
     }
     status_t st = live_status(&verbunden);
     int msg = s.message;
-    if (st == ST_ERROR && dr.fehler != fehler_ausgeblendet) msg = 1;
-    else if (msg == 1 && !dr.fehler) msg = 0;
+    uint32_t meldung = dr.fehler ? dr.fehler : dr.hms_n ? dr.hms_attr ^ dr.hms_code : 0;   /* Kennung zum Ausblenden */
+    if ((st == ST_ERROR || dr.hms_n) && meldung != fehler_ausgeblendet) msg = 1;
+    else if (msg == 1 && !meldung) msg = 0;
     if (dr.abgelehnt) msg = 2;
     else if (msg == 2) msg = 0;
 

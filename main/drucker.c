@@ -57,7 +57,9 @@ static TimerHandle_t wlan_timer;
 #define NACHRICHT_MAX (96 * 1024)
 static char *nachricht;
 
-const char *drucker_ip(void) { return DRUCKER_IP; }
+/* aktuelle Drucker-IP: aus secrets.h, wird durch die Suche (SSDP) nachgeführt, wenn der Router eine neue vergibt */
+static char ip[16] = DRUCKER_IP;
+const char *drucker_ip(void) { return ip; }
 const char *drucker_seriennummer(void) { return DRUCKER_SERIENNUMMER; }
 
 static void *psram_malloc(size_t n) { return heap_caps_malloc(n, MALLOC_CAP_SPIRAM); }
@@ -129,6 +131,14 @@ static void bericht(const cJSON *p)
     if (zahl(p, "big_fan1_speed", &v)) d.luefter[1] = luefter_prozent(v);
     if (zahl(p, "big_fan2_speed", &v)) d.luefter[2] = luefter_prozent(v);
 
+    const cJSON *hms = cJSON_GetObjectItemCaseSensitive(p, "hms");
+    if (cJSON_IsArray(hms)) {
+        d.hms_n = cJSON_GetArraySize(hms);
+        const cJSON *h0 = cJSON_GetArrayItem(hms, 0);
+        if (h0 && zahl(h0, "attr", &v)) d.hms_attr = (uint32_t)v;
+        if (h0 && zahl(h0, "code", &v)) d.hms_code = (uint32_t)v;
+        if (!d.hms_n) d.hms_attr = d.hms_code = 0;
+    }
     const cJSON *lichter = cJSON_GetObjectItemCaseSensitive(p, "lights_report"), *l;
     cJSON_ArrayForEach(l, lichter) {
         char node[24] = "", mode[8] = "";
@@ -250,6 +260,43 @@ bool drucker_filament_laden(int slot, int temperatur)
     return senden(w);
 }
 
+bool drucker_filament_entladen(int temperatur)
+{
+    cJSON *p, *w = befehl_neu("print", "ams_change_filament", &p);
+    cJSON_AddNumberToObject(p, "target", 255);   /* 255 = entladen */
+    cJSON_AddNumberToObject(p, "curr_temp", temperatur);
+    cJSON_AddNumberToObject(p, "tar_temp", temperatur);
+    return senden(w);
+}
+
+/* generische Bambu-Filamentprofile mit Düsentemperaturbereich */
+static const struct { const char *typ, *idx; int tmin, tmax; } PROFILE[] = {
+    { "PLA", "GFL99", 190, 240 }, { "PETG", "GFG99", 220, 270 }, { "ABS", "GFB99", 240, 270 },
+    { "ASA", "GFB98", 240, 270 }, { "TPU", "GFU99", 200, 250 },
+};
+
+bool drucker_material(int slot, const char *typ)
+{
+    int i = 0;
+    while (i < (int)(sizeof(PROFILE) / sizeof(*PROFILE)) - 1 && strcmp(PROFILE[i].typ, typ)) i++;
+    if (strcmp(PROFILE[i].typ, typ)) return false;
+    char farbe[12];
+    xSemaphoreTake(sperre, portMAX_DELAY);
+    snprintf(farbe, sizeof(farbe), "%06lXFF", (unsigned long)(d.farbe[slot] & 0xFFFFFF));
+    xSemaphoreGive(sperre);
+    cJSON *p, *w = befehl_neu("print", "ams_filament_setting", &p);
+    cJSON_AddNumberToObject(p, "ams_id", slot == 4 ? 255 : 0);
+    cJSON_AddNumberToObject(p, "tray_id", slot == 4 ? 254 : slot);
+    cJSON_AddStringToObject(p, "tray_info_idx", PROFILE[i].idx);
+    cJSON_AddStringToObject(p, "tray_color", farbe);
+    cJSON_AddNumberToObject(p, "nozzle_temp_min", PROFILE[i].tmin);
+    cJSON_AddNumberToObject(p, "nozzle_temp_max", PROFILE[i].tmax);
+    cJSON_AddStringToObject(p, "tray_type", PROFILE[i].typ);
+    bool ok = senden(w);
+    if (ok) MIT_SPERRE(snprintf(d.material[slot], 8, "%s", typ));
+    return ok;
+}
+
 static void alles_anfordern(void)
 {
     cJSON *p, *w = befehl_neu("pushing", "pushall", &p);
@@ -294,7 +341,7 @@ static void mqtt_starten(void)
 {
     if (mqtt_gestartet) return;
     char uri[48];
-    snprintf(uri, sizeof(uri), "mqtts://%s:8883", DRUCKER_IP);
+    snprintf(uri, sizeof(uri), "mqtts://%s:8883", ip);
     esp_mqtt_client_config_t c = {
         .broker.address.uri = uri,
         /* Der Drucker hat ein selbst signiertes Zertifikat (lokales Netz) */
@@ -320,6 +367,59 @@ void drucker_neu_verbinden(void)
 {
     if (mqtt_gestartet && d.wlan) esp_mqtt_client_reconnect(mqtt);
     else if (d.eingerichtet) esp_wifi_connect();
+}
+
+/* ------------------------------------------------------------------ Drucker im Netz finden (SSDP, UDP 2021)
+ * Bambu-Drucker melden sich alle paar Sekunden mit „Location: <IP>“ und „USN: <Seriennummer>“.
+ * Hat der Router dem Drucker eine neue IP gegeben, wird sie hier übernommen. */
+#include "lwip/sockets.h"
+
+static void kopfzeile(const char *nachricht, const char *name, char *wert, size_t n)
+{
+    wert[0] = 0;
+    const char *p = strcasestr(nachricht, name);
+    if (!p) return;
+    p += strlen(name);
+    while (*p == ' ') p++;
+    size_t l = strcspn(p, "\r\n");
+    if (l >= n) l = n - 1;
+    memcpy(wert, p, l);
+    wert[l] = 0;
+}
+
+static void suche_task(void *arg)
+{
+    (void)arg;
+    int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    int ja = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &ja, sizeof(ja));
+    struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(2021), .sin_addr.s_addr = htonl(INADDR_ANY) };
+    if (s < 0 || bind(s, (struct sockaddr *)&a, sizeof(a)) < 0) {
+        ESP_LOGW(TAG, "Suche nicht möglich");
+        if (s >= 0) close(s);
+        vTaskDeleteWithCaps(NULL);
+        return;
+    }
+    char *puf = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
+    for (;;) {
+        int n = recv(s, puf, 1023, 0);
+        if (n <= 0) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
+        puf[n] = 0;
+        char usn[32], ort[20];
+        kopfzeile(puf, "USN:", usn, sizeof(usn));
+        kopfzeile(puf, "Location:", ort, sizeof(ort));
+        if (strcmp(usn, DRUCKER_SERIENNUMMER) || !ort[0] || !strcmp(ort, ip)) continue;
+        unsigned a1, a2, a3, a4;
+        if (sscanf(ort, "%u.%u.%u.%u", &a1, &a2, &a3, &a4) != 4) continue;
+        ESP_LOGW(TAG, "Drucker hat eine neue IP: %s", ort);
+        MIT_SPERRE(snprintf(ip, sizeof(ip), "%.15s", ort));
+        if (mqtt_gestartet) {
+            char uri[48];
+            snprintf(uri, sizeof(uri), "mqtts://%s:8883", ort);
+            esp_mqtt_client_set_uri(mqtt, uri);
+            esp_mqtt_client_reconnect(mqtt);
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ WLAN */
@@ -348,6 +448,8 @@ static void wlan_ereignis(void *arg, esp_event_base_t base, int32_t id, void *da
         int rssi = esp_wifi_sta_get_ap_info(&ap) == ESP_OK ? ap.rssi : 0;
         MIT_SPERRE(d.wlan = true; d.rssi = rssi);
         mqtt_starten();
+        static bool suche;
+        if (!suche) suche = xTaskCreatePinnedToCoreWithCaps(suche_task, "suche", 4096, NULL, 2, NULL, 0, MALLOC_CAP_SPIRAM) == pdPASS;
     }
 }
 
@@ -444,7 +546,9 @@ static esp_tls_t *tls_verbinden(int port)
     esp_tls_cfg_t c = { .timeout_ms = 8000, .skip_common_name = true };
     esp_tls_t *t = esp_tls_init();
     if (!t) return NULL;
-    if (esp_tls_conn_new_sync(DRUCKER_IP, strlen(DRUCKER_IP), port, &c, t) != 1) {
+    char ziel[16];
+    snprintf(ziel, sizeof(ziel), "%s", ip);
+    if (esp_tls_conn_new_sync(ziel, strlen(ziel), port, &c, t) != 1) {
         esp_tls_conn_destroy(t);
         return NULL;
     }
@@ -656,6 +760,9 @@ static const char *attr(const char *tag, const char *name, char *wert, size_t n)
  *    abbrechen, sobald beides da ist (bei den meisten Dateien nach wenigen KB)
  *  - ohne Größen im Kopf (Datenbeschreiber, Bit 3) geht die Spur verloren; dann helfen die letzten 64 KB
  *    (Inhaltsverzeichnis am Dateiende) */
+/* Ist der Deflate-Strom in buf vollständig? Dann verbrauchte Bytes und entpackte Länge zurückgeben */
+static bool deflate_komplett(const uint8_t *buf, uint32_t n, uint32_t *verbraucht, uint32_t *entpackt);
+
 #define RING_N 65536
 #define SI_MAX 16384
 
@@ -666,7 +773,8 @@ typedef struct {
     uint8_t kopf[30 + 128];
     int kopf_n, kopf_soll;
     uint32_t rest, daten_rest;
-    int nach_extra;           /* nach dem Extra-Feld: 0 nächster Kopf, 1 Daten überspringen, 2 sammeln */
+    int nach_extra;           /* nach dem Extra-Feld: 0 nächster Kopf, 1 überspringen, 2 sammeln, 5 sammeln ohne Länge */
+    int beschreiber;          /* Datenbeschreiber nach Daten unbekannter Länge: noch zu prüfende Bytes */
     uint8_t *si;
     uint32_t si_c, si_u, si_n;
     int si_meth;
@@ -695,8 +803,18 @@ static void strom_kopf_fertig(zipstrom_t *z)
     int p;
     if (name_ist_platte(name, nl, &p) && !z->platte) z->platte = p;
     z->nach_extra = 0;
-    if ((flag & 8) && c == 0) { z->zustand = 3; return; }   /* Größe steht erst hinter den Daten */
-    if (nl == 26 && !memcmp(name, "Metadata/slice_info.config", 26) && c <= SI_MAX && !z->si_fertig) {
+    bool ist_si = nl == 26 && !memcmp(name, "Metadata/slice_info.config", 26) && !z->si_fertig;
+    if ((flag & 8) && c == 0) {   /* Größe steht erst hinter den Daten */
+        if (!ist_si || le16(k + 8) != 8) { z->zustand = 3; return; }
+        /* slice_info trotzdem mitnehmen: sammeln, bis der Deflate-Strom vollständig ist */
+        z->si_meth = 8;
+        z->si_n = 0;
+        z->nach_extra = 5;
+        z->rest = le16(k + 28);
+        z->zustand = 4;
+        return;
+    }
+    if (ist_si && c <= SI_MAX) {
         z->si_meth = le16(k + 8);
         z->si_c = c;
         z->si_u = le32(k + 22);
@@ -711,10 +829,8 @@ static void strom_kopf_fertig(zipstrom_t *z)
     z->zustand = 4;
 }
 
-static void strom_futter(zipstrom_t *z, const uint8_t *p, int n)
+static void strom_zerlegen(zipstrom_t *z, const uint8_t *p, int n)
 {
-    for (int i = 0; i < n; i++) z->ring[(z->gesamt + i) % RING_N] = p[i];
-    z->gesamt += n;
     while (n > 0 && z->zustand != 3) {
         if (z->zustand == 0) {   /* Kopf sammeln */
             int soll = z->kopf_soll ? z->kopf_soll : 30;
@@ -737,14 +853,45 @@ static void strom_futter(zipstrom_t *z, const uint8_t *p, int n)
             if (z->rest) break;
             if (z->zustand == 4 && z->nach_extra == 1) { z->zustand = 1; z->rest = z->daten_rest; }
             else if (z->zustand == 4 && z->nach_extra == 2) z->zustand = 2;
+            else if (z->zustand == 4 && z->nach_extra == 5) z->zustand = 5;
             else z->zustand = 0;
         } else if (z->zustand == 2) {   /* slice_info.config sammeln */
             uint32_t m = z->si_c - z->si_n < (uint32_t)n ? z->si_c - z->si_n : (uint32_t)n;
             memcpy(z->si + z->si_n, p, m);
             p += m; n -= m; z->si_n += m;
             if (z->si_n == z->si_c) { z->si_fertig = true; z->zustand = 0; }
+        } else if (z->zustand == 5) {   /* slice_info ohne Längenangabe */
+            uint32_t m = SI_MAX - z->si_n < (uint32_t)n ? SI_MAX - z->si_n : (uint32_t)n;
+            if (!m) { z->zustand = 3; break; }
+            memcpy(z->si + z->si_n, p, m);
+            z->si_n += m;
+            uint32_t verbraucht, entpackt;
+            if (!deflate_komplett(z->si, z->si_n, &verbraucht, &entpackt)) { p += m; n -= m; continue; }
+            /* Strom endet mitten im Block: der Rest gehört schon zum Datenbeschreiber/nächsten Kopf */
+            uint32_t ueber = z->si_n - verbraucht;
+            p += m - ueber; n -= m - ueber;
+            z->si_c = z->si_n = verbraucht;
+            z->si_u = entpackt;
+            z->si_fertig = true;
+            z->zustand = 6;   /* Datenbeschreiber: optional Signatur + CRC + 2 Größen */
+            z->beschreiber = 0;
+        } else if (z->zustand == 6) {
+            /* 12 Byte (ohne Signatur) oder 16 Byte (mit 0x08074b50); Signatur byteweise erkennen */
+            z->kopf[z->beschreiber++] = *p++; n--;
+            if (z->beschreiber == 4 && le32(z->kopf) != 0x08074b50) z->rest = 8;        /* schon CRC gelesen */
+            else if (z->beschreiber == 4) z->rest = 12;
+            else continue;
+            z->zustand = 4;          /* Rest überspringen, dann nächster Kopf */
+            z->nach_extra = 0;
         }
     }
+}
+
+static void strom_futter(zipstrom_t *z, const uint8_t *p, int n)
+{
+    for (int i = 0; i < n; i++) z->ring[(z->gesamt + i) % RING_N] = p[i];
+    z->gesamt += n;
+    strom_zerlegen(z, p, n);
 }
 
 /* Inhaltsverzeichnis aus den letzten 64 KB (wenn die Spur verloren ging) */
@@ -780,6 +927,22 @@ static void strom_ende(zipstrom_t *z)
         }
     }
     heap_caps_free(lin);
+}
+
+static bool deflate_komplett(const uint8_t *buf, uint32_t n, uint32_t *verbraucht, uint32_t *entpackt)
+{
+    static tinfl_decompressor *dec;
+    static uint8_t *aus;
+    if (!dec) dec = heap_caps_malloc(sizeof(tinfl_decompressor), MALLOC_CAP_SPIRAM);
+    if (!aus) aus = heap_caps_malloc(32768, MALLOC_CAP_SPIRAM);
+    if (!dec || !aus) return false;
+    tinfl_init(dec);
+    size_t in_n = n, out_n = 32768;
+    tinfl_status st = tinfl_decompress(dec, buf, &in_n, aus, aus, &out_n, TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF | TINFL_FLAG_HAS_MORE_INPUT);
+    if (st != TINFL_STATUS_DONE) return false;
+    *verbraucht = in_n;
+    *entpackt = out_n;
+    return true;
 }
 
 static void slice_info_lesen(druckdatei_t *k, zipstrom_t *z)

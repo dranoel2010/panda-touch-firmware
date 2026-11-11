@@ -31,6 +31,8 @@ typedef struct {
     uint32_t farbe[5];   /* RGB der Spulen (für die Zuordnung beim Druckstart) */
     int slot_aktiv;      /* 0–3 AMS, 4 extern, -1 keiner */
     int feuchte;         /* AMS-Luftfeuchte in %, -1 unbekannt */
+    int hms_n;           /* Anzahl HMS-Meldungen */
+    uint32_t hms_attr, hms_code;   /* erste HMS-Meldung */
 } drucker_t;
 
 void drucker_start(void);
@@ -44,6 +46,8 @@ bool drucker_tempo(int stufe);
 bool drucker_gcode(const char *gcode);
 bool drucker_licht(bool an);
 bool drucker_filament_laden(int slot, int temperatur);     /* slot 0–3 AMS, 4 extern */
+bool drucker_filament_entladen(int temperatur);
+bool drucker_material(int slot, const char *typ);          /* Material eines Slots am Drucker einstellen */
 
 /* ------------------------------------------------------------------ Druckdateien (FTPS, SD-Karte des Druckers) */
 
