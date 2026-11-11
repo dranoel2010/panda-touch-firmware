@@ -2,23 +2,25 @@
  * Panda-Touch-Firmware – Oberfläche „Soft White“ (Design: design/soft-white/prototype).
  *
  * Startet dunkel (Ruhebildschirm, Hintergrundlicht aus); Antippen weckt das Gerät.
- * Die Drucker-Anbindung (MQTT) folgt; bis dahin laufen die Demo-Daten des Prototyps.
+ * Drucker-Anbindung (WLAN + MQTT zum P1S) in drucker.c, Zugangsdaten in main/secrets.h.
  */
 #include <stdio.h>
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 #include "esp_lvgl_port.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "bsp/pandatouch.h"
 #include "driver/gpio.h"
 #include "esp_lcd_panel_rgb.h"
 #include "esp_lcd_panel_ops.h"
 #include "sw_app.h"
+#include "drucker.h"
 
 void sw_debug_start(void);
 
-#define VERSION "0.2.0"
+#define VERSION "0.3.0"
 
 static const char *TAG = "panda";
 
@@ -121,9 +123,30 @@ static lv_display_t *anzeige_starten(void)
     return disp;
 }
 
+/* Hintergrundlicht sanft nachführen (5 % je 10 ms): ein Sprung von 0 auf 85 % zusammen mit dem
+ * WLAN-Funk ließ die Versorgung über USB einbrechen; Ausschalten geht sofort */
+static esp_timer_handle_t licht_timer;
+static volatile int licht_ziel, licht_ist;
+
+static void licht_schritt(void *arg)
+{
+    (void)arg;
+    int z = licht_ziel, i = licht_ist;
+    if (i == z) { esp_timer_stop(licht_timer); return; }
+    i = i < z ? (i + 5 > z ? z : i + 5) : z;
+    licht_ist = i;
+    bsp_display_brightness_set(i);
+}
+
 static void hintergrundlicht(int prozent)
 {
-    bsp_display_brightness_set(prozent);
+    licht_ziel = prozent;
+    if (prozent <= licht_ist || !licht_timer) {
+        licht_ist = prozent;
+        bsp_display_brightness_set(prozent);
+        return;
+    }
+    if (!esp_timer_is_active(licht_timer)) esp_timer_start_periodic(licht_timer, 10 * 1000);
 }
 
 void app_main(void)
@@ -133,6 +156,8 @@ void app_main(void)
     lv_display_t *disp = anzeige_starten();
     assert(disp);
     bsp_display_brightness_set(0);   /* dunkel starten */
+    const esp_timer_create_args_t lt = { .callback = licht_schritt, .name = "licht" };
+    esp_timer_create(&lt, &licht_timer);
 
     if (!bsp_display_lock(portMAX_DELAY)) {
         ESP_LOGE(TAG, "Display-Sperre nicht bekommen");
@@ -140,6 +165,8 @@ void app_main(void)
     }
     sw_app_start(lv_screen_active(), hintergrundlicht, true);
     bsp_display_unlock();
+    /* WLAN nach der Oberfläche: deren Objekte sollen im schnellen internen RAM liegen */
+    drucker_start();
     sw_debug_start();
     ESP_LOGI(TAG, "Bereit, v%s (Soft White)", VERSION);
 }

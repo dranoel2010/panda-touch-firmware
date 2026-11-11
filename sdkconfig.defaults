@@ -30,3 +30,27 @@ CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
 # bei verpasstem Nachschub am nächsten Bildbeginn neu ausrichten
 CONFIG_BSP_LCD_RGB_BOUNCE_BUF_HEIGHT=20
 CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
+# Drucker-Anbindung: Der P1S hat ein selbst signiertes Zertifikat (nur lokales Netz)
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+# TLS- und WLAN-Puffer in den PSRAM, der interne RAM ist mit den Display-Streifen knapp
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# WLAN schlank: der interne (DMA-fähige) RAM ist durch die Display-Streifen fast voll
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+# internen RAM für WLAN/MQTT (Task-Stacks, Treiber) freihalten; kleine LVGL-Objekte weichen in den PSRAM aus
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=49152
+# WLAN-/LWIP-Code nicht in den internen RAM legen (kostet sonst zig KB; für ein Bedienteil reicht die Geschwindigkeit)
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_LWIP_IRAM_OPTIMIZATION=n
+CONFIG_LWIP_EXTRA_IRAM_OPTIMIZATION=n
+# MQTT-Task-Stack und -Puffer in den PSRAM (der Ereignis-Handler greift nicht auf Flash/NVS zu)
+CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
+CONFIG_MQTT_TASK_STACK_ON_EXTERNAL_MEMORY=y
+CONFIG_MQTT_BUFFERS_ON_EXTERNAL_MEMORY=y

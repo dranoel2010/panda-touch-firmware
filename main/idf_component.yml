@@ -2,4 +2,8 @@ dependencies:
   idf: ">=5.3"
   fmauneko/pandatouch: "^0.4.1"
   # 1.3.0 ruft unter IDF 6.0 die neue esp_vfs_fat_register-Signatur auf, die erst nach 6.0 kommt
+  # JSON für die Druckerberichte (seit IDF 6.0 nicht mehr eingebaut)
+  espressif/cjson: "^1.7.18"
+  # MQTT zum Drucker (seit IDF 6.0 nicht mehr eingebaut)
+  espressif/mqtt: "^1.0.0"
   espressif/usb_host_msc: "~1.2.0"

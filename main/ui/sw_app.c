@@ -17,7 +17,24 @@
 #include "sw_text.h"
 #ifdef ESP_PLATFORM
 #include "nvs.h"
+#include "esp_system.h"
 #endif
+
+/* LIVE: echte Druckerdaten (Gerät). Der Simulator (tools/sim) läuft weiter mit den Demo-Daten des
+ * Prototyps, damit die Design-Vergleiche gleich bleiben. */
+#if defined(ESP_PLATFORM) && !defined(SW_DEMO)
+#define LIVE 1
+#include "drucker.h"
+static drucker_t dr;
+static uint32_t dr_stand;
+static uint32_t dr_start_ms;
+static bool fertig_quittiert;   /* „Fertig“ bestätigt, bis der Drucker einen neuen Zustand meldet */
+static uint32_t fehler_ausgeblendet;
+static char dr_zustand_vorher[12];
+#else
+#define LIVE 0
+#endif
+#define FIRMWARE_VERSION "0.3.0"
 
 /* ------------------------------------------------------------------ Zustand (wie defaults() im Prototyp) */
 
@@ -83,6 +100,23 @@ static void defaults(void)
     s.history[0] = (hist_t){ "Kabelclip.3mf", "Fertig", "32 min" };
     s.history[1] = (hist_t){ "Pflanztopf.3mf", "Fertig", "2 h 12 min" };
     s.opt[0] = true; s.opt[2] = true;
+#if LIVE
+    /* keine Demo-Daten: bis der Drucker sich meldet „Verbinde …“ */
+    s.status = ST_LOADING;
+    s.progress = s.remaining = 0;
+    s.file[0] = 0;
+    s.light = false;
+    s.nozzle = s.nozzle_now = s.bed = s.bed_now = 0;
+    for (int i = 0; i < 3; i++) s.fans[i] = 0;
+    s.x = s.y = s.z = 0;
+    s.slot = -1;
+    s.ams = false;
+    for (int i = 0; i < 5; i++) strcpy(s.slots[i].material, "–");
+    s.sensor = false;
+    s.usb = false;
+    s.empty = true;       /* Dateiliste vom Drucker gibt es noch nicht */
+    s.n_history = 0;
+#endif
 }
 
 /* ------------------------------------------------------------------ Einstellungen merken (wie localStorage im Prototyp) */
@@ -147,6 +181,7 @@ static void end_time(char *buf, size_t n)
     time_t t = time(NULL) + s.remaining * 60;
     struct tm tm;
     localtime_r(&t, &tm);
+    if (tm.tm_year < 120) { snprintf(buf, n, "–"); return; }   /* Uhrzeit noch nicht gestellt */
     snprintf(buf, n, "%02d:%02d", tm.tm_hour, tm.tm_min);
 }
 
@@ -416,7 +451,12 @@ static void patch_home(void)
     }
     if (!idle) {
         set_key_text("text:job-title", s.file);
+#if LIVE
+        if (dr.schichten > 0) set_key_textf("text:job-detail", "Schicht %d / %d", dr.schicht, dr.schichten);
+        else set_key_text("text:job-detail", "");
+#else
         set_key_textf("text:job-detail", "Schicht %d / 300", (int)lround(s.progress * 3.0));
+#endif
     }
     set_key_textf("text:home-temps/button", "Düse %d °C", s.nozzle_now);
     set_key_textf("text:home-temps/button#2", "Bett %d °C", s.bed_now);
@@ -448,8 +488,13 @@ static void patch(void)
         set_key_textf("text:big-number#2", "%d°", s.bed);
         set_key_textf("text:muted", "· Ist %d °C", s.nozzle_now);
         set_key_textf("text:muted#2", "· Ist %d °C", s.bed_now);
+#if LIVE
+        if (dr.ams && dr.feuchte > 0) set_key_textf("text:notice", "AMS-Luftfeuchte Stufe %d von 5 · Kein Raumsensor angeschlossen", dr.feuchte);
+        else set_key_text("text:notice", "Kein Raumsensor angeschlossen");
+#else
         set_key_text("text:notice", s.sensor ? "Bauraum 36 °C · Raum 23 °C · Luftfeuchte 42 %"
                                              : "Bauraum 36 °C · Kein Raumsensor angeschlossen");
+#endif
         break;
     case R_FILAMENT:
         set_action_text("dry", s.drying ? "Trocknung stoppen" : "Trocknung starten");
@@ -519,7 +564,19 @@ static void patch(void)
         }
         break;
     case R_CONNECTION:
+#if LIVE
+        set_key_text("text:field:ip", drucker_ip()[0] ? drucker_ip() : "fehlt");
+        set_key_text("text:field:serial", drucker_seriennummer()[0] ? drucker_seriennummer() : "fehlt");
+        set_key_text("text:field:access", dr.eingerichtet ? "••••••••" : "fehlt");
+        set_key_text("text:field:wifi", dr.ssid[0] ? dr.ssid : "fehlt");
+        if (!dr.eingerichtet) set_key_text("text:label", "Zugangsdaten fehlen (main/secrets.h)");
+        else if (!dr.wlan) set_key_textf("text:label", "%s · nicht verbunden", dr.ssid);
+        else set_key_textf("text:label", "%s · Signal %s · MQTT lokal", dr.ssid,
+                           dr.rssi > -60 ? "gut" : dr.rssi > -72 ? "mittel" : "schwach");
+        set_key_text("text:notice", "Zugangsdaten sind in der Firmware hinterlegt (main/secrets.h).");
+#else
         set_select("wifi", wifi_index);
+#endif
         set_action_text("toggle:developer", s.developer ? "Developer Mode: an" : "Developer Mode: aus");
         select_action("toggle:developer", s.developer);
         break;
@@ -537,6 +594,9 @@ static void patch(void)
         set_select("timeout", timeout_index());
         select_action("toggle:sound", s.sound);
         select_action("toggle:night", s.night);
+#if LIVE
+        set_key_text("text:label", "Panda Touch · Firmware " FIRMWARE_VERSION);
+#endif
         break;
     case R_DEMO:
         for (int i = 0; i < 9; i++) {
@@ -549,6 +609,18 @@ static void patch(void)
         select_action("toggle:empty", s.empty);
         select_action("toggle:sensor", s.sensor);
         break;
+#if LIVE
+    case R_MESSAGES:
+        if (s.message == 1) {
+            set_key_text("text:panel/h3", "Drucker meldet einen Fehler");
+            set_key_textf("text:panel/p", "Fehlercode %04X-%04X. Prüfe den Drucker und lies die Details am", (unsigned)(dr.fehler >> 16),
+                          (unsigned)(dr.fehler & 0xffff));
+            set_key_text("text:panel/p#2", "Druckerbildschirm oder in der Bambu-App nach.");
+        } else if (s.message == 2) {
+            set_key_text("text:panel/p", "Prüfe Access Code und Developer Mode am Drucker, dann erneut testen.");
+        }
+        break;
+#endif
     default: break;
     }
 }
@@ -647,6 +719,11 @@ static void on_field(const char *field, int32_t v, const char *text)
         int i = atoi(field + 4);
         if (!s.connected) { toast("Drucker offline"); render(); return; }
         s.fans[i] = v;
+#if LIVE
+        char g[40];
+        snprintf(g, sizeof(g), "M106 P%d S%d\n", i + 1, (int)(v * 255 / 100));
+        drucker_gcode(g);
+#endif
         char k[32];
         snprintf(k, sizeof(k), i ? "text:row/strong#%d" : "text:row/strong", i + 1);
         set_key_textf(k, "%d %%", (int)v);
@@ -692,6 +769,9 @@ static void history_add(const char *result, const char *duration)
 static void do_pause(void)
 {
     if (!need_connection() || !active()) return;
+#if LIVE
+    drucker_druck_befehl(s.status == ST_PAUSED ? "resume" : "pause");
+#endif
     s.status = s.status == ST_PAUSED ? ST_PRINTING : ST_PAUSED;
     render();
     toast(s.status == ST_PAUSED ? "Druck pausiert" : "Druck wird fortgesetzt");
@@ -731,6 +811,11 @@ static void do_move(void)
     *v += s.step * move_dir;
     if (*v < 0) *v = 0;
     if (*v > 256) *v = 256;
+#if LIVE
+    char g[48];
+    snprintf(g, sizeof(g), "G91\nG1 %c%d F%d\nG90\n", move_axis - 32, s.step * move_dir, move_axis == 'z' ? 600 : 3000);
+    drucker_gcode(g);
+#endif
     render();
     char buf[32];
     snprintf(buf, sizeof(buf), "%c → %d mm", move_axis - 32, *v);
@@ -754,14 +839,30 @@ static void homed_done(void)
     render();
     toast("Alle Achsen referenziert");
 }
-static void home_axes_busy(void) { busy(&sw_scr_busy_homeaxes, homed_done); }
+static void home_axes_busy(void)
+{
+#if LIVE
+    drucker_gcode("G28\n");
+#endif
+    busy(&sw_scr_busy_homeaxes, homed_done);
+}
 
 static int extrude_dir;
-static void do_extrude(void) { toast(extrude_dir > 0 ? "5 mm Filament gefördert" : "5 mm Filament zurückgezogen"); }
+static void do_extrude(void)
+{
+#if LIVE
+    drucker_gcode(extrude_dir > 0 ? "M83\nG1 E5 F300\n" : "M83\nG1 E-5 F300\n");
+#endif
+    toast(extrude_dir > 0 ? "5 mm Filament gefördert" : "5 mm Filament zurückgezogen");
+}
 
 static void cancel_confirmed(void)
 {
+#if LIVE
+    drucker_druck_befehl("stop");   /* Verlaufseintrag kommt mit der Meldung des Druckers */
+#else
     history_add("Abgebrochen", "Teilweise gedruckt");
+#endif
     s.status = ST_IDLE;
     s.progress = 0;
     s.remaining = 0;
@@ -772,6 +873,9 @@ static void cancel_confirmed(void)
 
 static void heat_off(void)
 {
+#if LIVE
+    drucker_gcode("M104 S0\nM140 S0\n");
+#endif
     s.nozzle = s.bed = 0;
     render();
     toast("Heizungen ausgeschaltet");
@@ -794,6 +898,15 @@ static void wizard_advance(void) { wizard_step++; go(R_WIZARD); }
 
 static void reconnect_done(void)
 {
+#if LIVE
+    render();
+    if (!dr.eingerichtet) toast("Zugangsdaten fehlen (main/secrets.h).");
+    else if (!dr.wlan) toast("WLAN nicht verbunden.");
+    else if (dr.abgelehnt) toast("Anmeldung abgelehnt · Access Code und Developer Mode prüfen.");
+    else if (!dr.verbunden) toast("Drucker antwortet nicht · IP-Adresse prüfen.");
+    else toast("Verbindung erfolgreich getestet");
+    return;
+#endif
     if (!s.developer) {
         s.connected = false;
         s.message = 2;
@@ -818,12 +931,31 @@ static void wifi_done(void)
     toast("WLAN bereit · jetzt Druckerdaten prüfen");
 }
 
+#if LIVE
+static void restart_done(void) { esp_restart(); }
+#else
 static void restart_done(void) { go(R_HOME); }
+#endif
 static void restart_busy(void) { busy(&sw_scr_busy_restart, restart_done); }
+#if LIVE
+static void update_done(void) { toast("Firmware " FIRMWARE_VERSION " · Du bist auf dem aktuellen Stand"); }
+#else
 static void update_done(void) { toast("Demo 1.0 · Du bist auf dem aktuellen Stand"); }
+#endif
 
 static void factory_done(void)
 {
+#if LIVE
+    s.brightness = 85;
+    s.timeout_min = 5;
+    s.sound = true;
+    s.night = s.auto_off = false;
+    settings_save();
+    reset_idle();
+    go(R_HOME);
+    toast("Einstellungen zurückgesetzt");
+    return;
+#endif
     defaults();
     settings_save();
     go(R_HOME);
@@ -869,9 +1001,63 @@ static void state_change(status_t v)
     }
 }
 
+#if LIVE
+static int temperatur_fuer(const char *mat) { return !strcmp(mat, "PETG") ? 250 : !strcmp(mat, "ABS") || !strcmp(mat, "ASA") ? 260 : 220; }
+
+/* Aktionen, die im Live-Betrieb anders laufen als im Prototyp. true = erledigt */
+static bool live_dispatch(const char *a)
+{
+    if (!strcmp(a, "nav:demo") || !strncmp(a, "state:", 6)) { toast("Demo-Modus ist ausgeschaltet"); return true; }
+    if (!strcmp(a, "nav:setup") || !strcmp(a, "setup-connect") || !strcmp(a, "select:wifi")) {
+        toast("WLAN ist in der Firmware hinterlegt (main/secrets.h)");
+        return true;
+    }
+    if (!strcmp(a, "power-switch") || !strcmp(a, "toggle:autoOff")) { toast("Keine schaltbare Steckdose eingerichtet"); return true; }
+    if (!strcmp(a, "toggle:developer")) { render(); return true; }
+    if (!strcmp(a, "dry")) { toast("Das AMS des P1S kann nicht trocknen"); return true; }
+    if (!strncmp(a, "history:", 8)) return true;
+    if (!strcmp(a, "ack-finish")) { fertig_quittiert = true; return false; }
+    if (!strncmp(a, "resolve:", 8) || !strncmp(a, "dismiss:", 8)) {
+        if (s.message == 1) fehler_ausgeblendet = dr.fehler;
+        s.message = 0;
+        render();
+        toast(a[0] == 'r' ? "Hinweis bestätigt" : "Meldung ausgeblendet");
+        return true;
+    }
+    if (!strcmp(a, "reconnect")) { drucker_neu_verbinden(); return false; }
+    if (!strcmp(a, "toggle:light")) {
+        if (!need_connection()) return true;
+        drucker_licht(!s.light);
+        return false;
+    }
+    if (!strncmp(a, "speed:", 6)) {
+        if (!need_connection()) return true;
+        static const char *const n[4] = { "Leise", "Standard", "Sport", "Ludicrous" };
+        for (int i = 0; i < 4; i++) if (!strcmp(a + 6, n[i])) drucker_tempo(i + 1);
+        return false;
+    }
+    if (!strcmp(a, "wizard-next") && wizard_step == 1) {
+        if (wizard_load) drucker_filament_laden(slot_index, temperatur_fuer(s.slots[slot_index].material));
+        else drucker_druck_befehl("unload_filament");
+        return false;
+    }
+    return false;
+}
+
+static void solltemperaturen_senden(void)
+{
+    char g[40];
+    snprintf(g, sizeof(g), "M104 S%d\nM140 S%d\n", s.nozzle, s.bed);
+    drucker_gcode(g);
+}
+#endif
+
 static void dispatch(const char *action)
 {
     reset_idle();
+#if LIVE
+    if (live_dispatch(action)) return;
+#endif
     if (!strncmp(action, "nav:", 4)) {
         for (int i = 0; i < (int)(sizeof(ROUTE_NAMES) / sizeof(*ROUTE_NAMES)); i++)
             if (!strcmp(action + 4, ROUTE_NAMES[i])) { go((route_t)i); return; }
@@ -923,6 +1109,9 @@ static void dispatch(const char *action)
         *v += delta;
         if (*v < 0) *v = 0;
         if (*v > (bed ? 110 : 300)) *v = bed ? 110 : 300;
+#if LIVE
+        solltemperaturen_senden();
+#endif
         render();
         return;
     }
@@ -932,6 +1121,9 @@ static void dispatch(const char *action)
         if (!strcmp(p, "PLA")) { s.nozzle = 220; s.bed = 55; }
         else if (!strcmp(p, "PETG")) { s.nozzle = 250; s.bed = 75; }
         else { s.nozzle = 260; s.bed = 100; }
+#if LIVE
+        solltemperaturen_senden();
+#endif
         render();
         char buf[48];
         snprintf(buf, sizeof(buf), "%s-Vorheizen aktiviert", p);
@@ -1042,6 +1234,90 @@ static void on_action(const char *action, lv_obj_t *obj)
 
 /* ------------------------------------------------------------------ Simulation (setInterval 2 s im Prototyp) */
 
+#if LIVE
+/* ------------------------------------------------------------------ Druckerdaten übernehmen (alle 0,5 s) */
+
+static uint32_t druck_start_ms;
+
+static status_t live_status(bool *verbunden)
+{
+    *verbunden = true;
+    if (dr.eingerichtet && dr.verbunden && dr.daten) {
+        const char *z = dr.zustand;
+        if (!strcmp(z, "RUNNING")) return dr.stufe == 1 ? ST_LEVELLING : dr.stufe == 2 || dr.stufe == 7 ? ST_HEATING : ST_PRINTING;
+        if (!strcmp(z, "PREPARE") || !strcmp(z, "SLICING") || !strcmp(z, "INIT")) return ST_HEATING;
+        if (!strcmp(z, "PAUSE")) return dr.fehler ? ST_ERROR : ST_PAUSED;
+        if (!strcmp(z, "FINISH")) return fertig_quittiert ? ST_IDLE : ST_FINISHED;
+        return ST_IDLE;
+    }
+    if (dr.eingerichtet && !dr.abgelehnt && !dr.daten && lv_tick_elaps(dr_start_ms) < 30000) return ST_LOADING;
+    *verbunden = false;
+    return ST_OFFLINE;
+}
+
+static void dauer_text(char *buf, size_t n)
+{
+    if (!druck_start_ms) { snprintf(buf, n, "–"); return; }
+    int min = (int)(lv_tick_elaps(druck_start_ms) / 60000);
+    if (min >= 60) snprintf(buf, n, "%d h %d min", min / 60, min % 60);
+    else snprintf(buf, n, "%d min", min);
+}
+
+static void tick(lv_timer_t *t)
+{
+    (void)t;
+    drucker_holen(&dr, &dr_stand);
+    bool verbunden;
+    if (strcmp(dr.zustand, dr_zustand_vorher)) {
+        /* Druck beendet oder abgebrochen -> Verlauf */
+        bool war_aktiv = !strcmp(dr_zustand_vorher, "RUNNING") || !strcmp(dr_zustand_vorher, "PAUSE") ||
+                         !strcmp(dr_zustand_vorher, "PREPARE");
+        char d[24];
+        dauer_text(d, sizeof(d));
+        if (war_aktiv && !strcmp(dr.zustand, "FINISH")) history_add("Fertig", d);
+        if (war_aktiv && !strcmp(dr.zustand, "FAILED")) history_add("Abgebrochen", d);
+        if (!war_aktiv && (!strcmp(dr.zustand, "RUNNING") || !strcmp(dr.zustand, "PREPARE"))) druck_start_ms = lv_tick_get();
+        if (!strcmp(dr.zustand, "FINISH") || !strcmp(dr.zustand, "FAILED") || !strcmp(dr.zustand, "IDLE")) druck_start_ms = 0;
+        fertig_quittiert = false;
+        snprintf(dr_zustand_vorher, sizeof(dr_zustand_vorher), "%s", dr.zustand);
+    }
+    status_t st = live_status(&verbunden);
+    int msg = s.message;
+    if (st == ST_ERROR && dr.fehler != fehler_ausgeblendet) msg = 1;
+    else if (msg == 1 && !dr.fehler) msg = 0;
+    if (dr.abgelehnt) msg = 2;
+    else if (msg == 2) msg = 0;
+
+    static const char *const TEMPO[5] = { "Standard", "Leise", "Standard", "Sport", "Ludicrous" };
+    char vorher[sizeof(s)];
+    memcpy(vorher, &s, sizeof(s));
+    s.status = st;
+    s.connected = verbunden;
+    s.developer = !dr.abgelehnt;
+    s.message = msg;
+    if (verbunden && dr.daten) {
+        s.progress = dr.prozent;
+        s.remaining = dr.rest_min;
+        snprintf(s.file, sizeof(s.file), "%.31s", dr.datei);
+        s.nozzle_now = dr.duese;
+        s.nozzle = dr.duese_soll;
+        s.bed_now = dr.bett;
+        s.bed = dr.bett_soll;
+        snprintf(s.speed, sizeof(s.speed), "%s", TEMPO[dr.tempo >= 1 && dr.tempo <= 4 ? dr.tempo : 0]);
+        if (route != R_FANS) for (int i = 0; i < 3; i++) s.fans[i] = dr.luefter[i];
+        s.light = dr.licht;
+        s.ams = dr.ams;
+        for (int i = 0; i < 5; i++) snprintf(s.slots[i].material, sizeof(s.slots[i].material), "%s", dr.material[i]);
+        s.slot = dr.slot_aktiv;
+    }
+    if (!memcmp(vorher, &s, sizeof(s)) || ov_modal) return;
+    if (route == R_HOME || route == R_TEMPS || route == R_CONTROL || route == R_FILAMENT || route == R_SLOT ||
+        route == R_CONNECTION || route == R_MESSAGES || route == R_FILES || route == R_HISTORY) {
+        if (pick_def() != scr->def) render();
+        else patch();
+    }
+}
+#else
 static int elapsed;
 static void tick(lv_timer_t *t)
 {
@@ -1085,6 +1361,7 @@ static void tick(lv_timer_t *t)
         else patch();
     }
 }
+#endif
 
 static void any_touch(lv_event_t *e)
 {
@@ -1102,7 +1379,12 @@ void sw_app_start(lv_obj_t *parent, sw_backlight_cb_t backlight, bool start_asle
     sw_render_set_field_cb(on_field);
     if (start_asleep) sleep_now();   /* vor dem ersten Bild, damit das Licht nie kurz angeht */
     render();
+#if LIVE
+    dr_start_ms = lv_tick_get();
+    lv_timer_create(tick, 500, NULL);
+#else
     lv_timer_create(tick, 2000, NULL);
+#endif
     for (lv_indev_t *i = lv_indev_get_next(NULL); i; i = lv_indev_get_next(i))
         lv_indev_add_event_cb(i, any_touch, LV_EVENT_PRESSED, NULL);
     if (!start_asleep) reset_idle();

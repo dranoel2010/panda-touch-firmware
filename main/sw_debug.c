@@ -259,7 +259,10 @@ static void debug_task(void *arg)
 
 void sw_debug_start(void)
 {
-    if (!uart_is_driver_installed(UART_NUM_0)) uart_driver_install(UART_NUM_0, 1024, 4096, 0, NULL, 0);
+    if (!uart_is_driver_installed(UART_NUM_0)) {
+        esp_err_t e = uart_driver_install(UART_NUM_0, 1024, 4096, 0, NULL, 0);
+        if (e != ESP_OK) ESP_LOGE("debug", "UART-Treiber: %s", esp_err_to_name(e));
+    }
     if (bsp_display_lock(portMAX_DELAY)) {
         lv_display_t *d = lv_display_get_default();
         lv_display_add_event_cb(d, refr_cb, LV_EVENT_REFR_START, NULL);
@@ -271,5 +274,8 @@ void sw_debug_start(void)
         lv_display_add_event_cb(d, refr_cb, LV_EVENT_FLUSH_WAIT_FINISH, NULL);
         bsp_display_unlock();
     }
-    xTaskCreate(debug_task, "debug", 6144, NULL, 2, NULL);
+    if (xTaskCreate(debug_task, "debug", 6144, NULL, 2, NULL) != pdPASS) ESP_LOGE("debug", "Task nicht startbar");
+    ESP_LOGI("debug", "intern frei %u (größter Block %u), PSRAM frei %u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
