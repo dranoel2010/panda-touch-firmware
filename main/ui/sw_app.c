@@ -36,7 +36,7 @@ static uint32_t dl_stand, dl_geladen_ms;
 #else
 #define LIVE 0
 #endif
-#define FIRMWARE_VERSION "0.3.0"
+#define FIRMWARE_VERSION "0.4.0"
 
 /* ------------------------------------------------------------------ Zustand (wie defaults() im Prototyp) */
 

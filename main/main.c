@@ -21,7 +21,7 @@
 
 void sw_debug_start(void);
 
-#define VERSION "0.3.0"
+#define VERSION "0.4.0"
 
 static const char *TAG = "panda";
 

@@ -18,7 +18,27 @@ Das Design liegt als klickbarer Prototyp unter `design/soft-white/prototype` (un
 Auf dem Gerät zeichnet `main/ui/sw_render.c` jede Fläche in der Reihenfolge des Browsers
 (äußere Schatten → Verlauf → innere Schatten → Rahmen → Inhalt). Texte setzt `sw_text.c` mit Subpixel-Laufweite
 wie Chrome. Verläufe werden mit Dithering auf das RGB565-Display gebracht. Die App-Logik `sw_app.c` ist eine
-1:1-Portierung von `app.js` (zurzeit mit den Demo-Daten des Prototyps).
+1:1-Portierung von `app.js`; auf dem Gerät kommen alle Werte vom Drucker (`main/drucker.c`),
+der Simulator zeigt weiter die Demo-Daten des Prototyps.
+
+## Drucker einrichten
+Am P1S den **Developer Mode** einschalten. Dann die Zugangsdaten eintragen (landen in `main/secrets.h`,
+die nie ins Git kommt):
+```bash
+python3 tools/zugangsdaten.py
+```
+Gefragt werden WLAN-Name und -Passwort, Drucker-IP, Access Code (P1S: Einstellungen → WLAN) und
+Seriennummer (Einstellungen → Gerät). Danach bauen und flashen. Ändert der Router die IP des Druckers,
+findet das Gerät ihn über dessen Netzwerk-Ansage (SSDP) selbst wieder.
+
+Was angebunden ist (`main/drucker.c`):
+- MQTT über TLS (Port 8883): Status, Fortschritt, Restzeit, Schichten, Temperaturen, Lüfter, Licht, Tempo,
+  AMS (Material, Farbe, aktiver Slot, Feuchte), Druckfehler und HMS-Meldungen
+- Befehle: Pause/Fortsetzen/Abbrechen, Tempo, Solltemperaturen, Licht, Lüfter, Achsen referenzieren/bewegen,
+  Extrudieren, Filament laden/entladen, Material eines Slots
+- Druckdateien per FTPS (Port 990) aus `/` und `/cache` der SD-Karte: die drei neuesten druckbaren 3MF mit
+  Druckzeit, Material und Gewicht aus `slice_info.config`; Druck starten mit AMS-Zuordnung nach Material/Farbe
+- Wächter: hängt die Oberfläche 30 s, startet das Gerät neu
 
 Neu erzeugen (Chrome, Node, Python mit fonttools/numpy/pillow nötig):
 ```bash
@@ -28,6 +48,8 @@ NODE_PATH=<node_modules mit puppeteer-core> node extract.js && node layers.js &&
 
 ## Prüfen
 - `tools/sim`: dieselbe Oberfläche als Mac-Programm (`make`, dann `./sim bild.ppm nav:menu`).
+- `make sim_live`: Live-Oberfläche mit Schein-Drucker, Zustände per `dr:…`
+  (z. B. `./sim_live bild.ppm dr:zustand=RUNNING dr:prozent=42 nav:home`); gesendete Befehle werden ausgegeben.
 - `python tools/sim/regress.py` vergleicht alle Bildschirme Pixel für Pixel mit dem Prototyp,
   `--device` macht das Gleiche auf dem angeschlossenen Gerät (Debug-Kanal, Licht bleibt aus).
 - Debug-Kanal über USB (115200 Baud): `snap`, `fb0`, `go <aktion>`, `dark 1`, `perf`, `prof <n>` – siehe `main/sw_debug.c`.
@@ -52,3 +74,6 @@ mit 230400 Baud). Zurückspielen: `write_flash 0 pandatouch_original.bin`.
 - v0.1.1: Helligkeitsregler (wird gespeichert)
 - v0.2.0: Oberfläche „Soft White“ nach dem Prototyp: alle Bildschirme, Dialoge, Schalter, Regler; Demo-Daten;
   Einstellungen bleiben erhalten; startet dunkel im Ruhebildschirm
+- v0.3.0: Drucker-Anbindung (WLAN, MQTT), Display stabil (Streifen im internen RAM, 18 MHz)
+- v0.4.0: Druckdateien und Druckstart vom Gerät, HMS-Meldungen, Material am AMS, Spulenfarben,
+  Drucker-Suche per SSDP, Wächter gegen Hänger; Bildschirm wacht bei Druckende/Fehler auf
