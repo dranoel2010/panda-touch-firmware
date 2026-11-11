@@ -17,7 +17,7 @@ import numpy as np
 import serial
 from PIL import Image
 
-port = glob.glob('/dev/cu.wchusbserial*')[0]
+port = '/dev/cu.wchusbserial1240'
 s = serial.Serial()          # Steuerleitungen vor dem Öffnen setzen, sonst startet das Gerät neu
 s.port, s.baudrate, s.timeout = port, 115200, 1
 s.dtr = False

@@ -139,9 +139,9 @@ static void bericht(const cJSON *p)
         const cJSON *einheiten = cJSON_GetObjectItemCaseSensitive(ams, "ams");
         if (cJSON_IsArray(einheiten)) {
             const cJSON *erste = cJSON_GetArrayItem(einheiten, 0);
-            d.ams = erste != NULL;
+            if (erste) d.ams = true;   /* Teilberichte können eine leere Liste schicken -> nicht als „kein AMS“ werten */
             if (erste) {
-                if (zahl(erste, "humidity", &v)) d.feuchte = (int)v;
+                if (zahl(erste, "humidity_raw", &v)) d.feuchte = (int)(v + 0.5);   /* ältere Drucker-Firmware: nur Stufe */
                 const cJSON *t;
                 cJSON_ArrayForEach(t, cJSON_GetObjectItemCaseSensitive(erste, "tray")) {
                     if (!zahl(t, "id", &v) || v < 0 || v > 3) continue;
@@ -149,6 +149,7 @@ static void bericht(const cJSON *p)
                 }
             }
         }
+        if (zahl(ams, "ams_exist_bits", &v)) d.ams = v != 0;
         if (zahl(ams, "tray_now", &v)) {
             int n = (int)v;
             d.slot_aktiv = n >= 0 && n <= 3 ? n : n == 254 ? 4 : -1;
@@ -354,6 +355,7 @@ void drucker_start(void)
 
     memset(&d, 0, sizeof(d));
     d.slot_aktiv = -1;
+    d.feuchte = -1;
     for (int i = 0; i < 5; i++) strcpy(d.material[i], "–");
     snprintf(d.ssid, sizeof(d.ssid), "%s", WLAN_SSID);
     d.eingerichtet = WLAN_SSID[0] && DRUCKER_IP[0] && DRUCKER_ACCESS_CODE[0] && DRUCKER_SERIENNUMMER[0];

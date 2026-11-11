@@ -489,7 +489,7 @@ static void patch(void)
         set_key_textf("text:muted", "· Ist %d °C", s.nozzle_now);
         set_key_textf("text:muted#2", "· Ist %d °C", s.bed_now);
 #if LIVE
-        if (dr.ams && dr.feuchte > 0) set_key_textf("text:notice", "AMS-Luftfeuchte Stufe %d von 5 · Kein Raumsensor angeschlossen", dr.feuchte);
+        if (dr.ams && dr.feuchte >= 0) set_key_textf("text:notice", "AMS-Luftfeuchte %d %% · Kein Raumsensor angeschlossen", dr.feuchte);
         else set_key_text("text:notice", "Kein Raumsensor angeschlossen");
 #else
         set_key_text("text:notice", s.sensor ? "Bauraum 36 °C · Raum 23 °C · Luftfeuchte 42 %"
@@ -500,6 +500,10 @@ static void patch(void)
         set_action_text("dry", s.drying ? "Trocknung stoppen" : "Trocknung starten");
         select_action("dry", s.drying);
         set_key_text("text:sub", s.drying ? "Trocknet · 4 h" : "4 Slots + extern");
+#if LIVE
+        if (dr.feuchte >= 0) set_key_textf("text:row/span", "AMS · Feuchte %d %%", dr.feuchte);
+        else set_key_text("text:row/span", "AMS · Feuchte –");
+#endif
         for (int i = 0; i < 4; i++) {
             char k[32];
             snprintf(k, sizeof(k), i ? "text:slot/small#%d" : "text:slot/small", i + 1);

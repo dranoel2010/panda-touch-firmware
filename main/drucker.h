@@ -29,7 +29,7 @@ typedef struct {
     bool ams;
     char material[5][8]; /* 4 AMS-Slots + externe Spule */
     int slot_aktiv;      /* 0–3 AMS, 4 extern, -1 keiner */
-    int feuchte;         /* AMS-Luftfeuchte-Stufe 1–5, 0 unbekannt */
+    int feuchte;         /* AMS-Luftfeuchte in %, -1 unbekannt */
 } drucker_t;
 
 void drucker_start(void);
