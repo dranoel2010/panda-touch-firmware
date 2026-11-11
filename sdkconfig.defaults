@@ -23,10 +23,10 @@ CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_LV_USE_SNAPSHOT=y
 # Leistung: optimiert übersetzen (Standard wäre -Og)
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
-# Leistung: beide Kerne zeichnen (zwei Zeichen-Einheiten)
+# eine Zeichen-Einheit: zwei belasten den PSRAM so, dass das Display verrutscht
 CONFIG_LV_OS_FREERTOS=y
-CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
-# Leistung: 1-ms-Takt, damit LVGL/Zeichen-Threads nicht auf 10-ms-Ticks warten
-CONFIG_FREERTOS_HZ=1000
-# Display: LCD-DMA liest den PSRAM-Bildspeicher selbst; bei Engpass am nächsten VSYNC neu ausrichten
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
+# Display stabil (kein Verrutschen bei viel Zeichenarbeit): größerer Zwischenpuffer,
+# bei verpasstem Nachschub am nächsten Bildbeginn neu ausrichten
+CONFIG_BSP_LCD_RGB_BOUNCE_BUF_HEIGHT=20
 CONFIG_LCD_RGB_RESTART_IN_VSYNC=y

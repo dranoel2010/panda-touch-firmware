@@ -35,27 +35,17 @@ static void nvs_starten(void)
 
 esp_err_t bsp_display_indev_init(lv_display_t *disp);   /* bsp_touch.c */
 
-/* Darstellungsart:
+/* Darstellungsart (0 wie die Original-Firmware: ein Bildspeicher, nur fertige Streifen werden
+ * hineinkopiert; das hält den PSRAM frei für das Display, sonst verrutscht das Bild):
  *  0 = Streifen: LVGL zeichnet in Streifen im internen RAM und kopiert sie in den sichtbaren Bildspeicher
  *      (neuer Bildschirm baut sich sichtbar von oben nach unten auf)
  *  1 = direkt mit Doppelpuffer: gezeichnet wird im unsichtbaren Bildspeicher, dann sauber umgeschaltet
  *      (kein Reißen/Aufbauen sichtbar) */
 #ifndef ANZEIGE_DIREKT
-#define ANZEIGE_DIREKT 1
+#define ANZEIGE_DIREKT 0
 #endif
 
-/* Bildtakt und Zwischenpuffer des RGB-Displays.
- * Das BSP füllt kleine SRAM-Zwischenpuffer per Prozessor (Interrupt) aus dem PSRAM-Bildspeicher; bei 23 MHz
- * kostet das fast einen ganzen Kern und die halbe PSRAM-Bandbreite. Ohne Zwischenpuffer liest der
- * LCD-DMA den Bildspeicher selbst. */
-#ifndef ANZEIGE_PCLK_HZ
-#define ANZEIGE_PCLK_HZ BSP_LCD_PIXEL_CLOCK_HZ
-#endif
-#ifndef ANZEIGE_BOUNCE_ZEILEN
-#define ANZEIGE_BOUNCE_ZEILEN 0
-#endif
-
-/* wie bsp_display_new, aber mit eigenem Takt / Zwischenpuffer */
+/* wie bsp_display_new, aber Anzahl Bildspeicher passend zur Darstellungsart */
 static esp_err_t panel_neu(esp_lcd_panel_handle_t *ret)
 {
     ESP_ERROR_CHECK(bsp_display_brightness_init());
@@ -68,7 +58,7 @@ static esp_err_t panel_neu(esp_lcd_panel_handle_t *ret)
     esp_lcd_rgb_panel_config_t c = {
         .clk_src = LCD_CLK_SRC_DEFAULT,
         .timings = {
-            .pclk_hz = ANZEIGE_PCLK_HZ,
+            .pclk_hz = 18 * 1000 * 1000,   /* 23 MHz (BSP) braucht mehr PSRAM-Durchsatz als übrig ist */
             .h_res = BSP_LCD_H_RES,
             .v_res = BSP_LCD_V_RES,
             .hsync_pulse_width = 4,
@@ -81,8 +71,8 @@ static esp_err_t panel_neu(esp_lcd_panel_handle_t *ret)
         },
         .data_width = 16,
         .in_color_format = LCD_COLOR_FMT_RGB565,
-        .num_fbs = 2,
-        .bounce_buffer_size_px = BSP_LCD_H_RES * ANZEIGE_BOUNCE_ZEILEN,
+        .num_fbs = ANZEIGE_DIREKT ? 2 : 1,
+        .bounce_buffer_size_px = BSP_LCD_H_RES * CONFIG_BSP_LCD_RGB_BOUNCE_BUF_HEIGHT,
         .hsync_gpio_num = GPIO_NUM_NC,
         .vsync_gpio_num = GPIO_NUM_NC,
         .de_gpio_num = BSP_LCD_DE,
@@ -108,7 +98,7 @@ static lv_display_t *anzeige_starten(void)
     if (panel_neu(&panel) != ESP_OK) return NULL;
     const lvgl_port_display_cfg_t disp_cfg = {
         .panel_handle = panel,
-        .buffer_size = ANZEIGE_DIREKT ? BSP_LCD_H_RES * BSP_LCD_V_RES : BSP_LCD_H_RES * 60,
+        .buffer_size = ANZEIGE_DIREKT ? BSP_LCD_H_RES * BSP_LCD_V_RES : BSP_LCD_H_RES * 40,
         .double_buffer = !ANZEIGE_DIREKT,
         .hres = BSP_LCD_H_RES,
         .vres = BSP_LCD_V_RES,

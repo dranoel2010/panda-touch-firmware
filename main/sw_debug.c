@@ -114,7 +114,7 @@ static void snap(void)
 static void fbsnap(int which)
 {
     void *fb[2] = { NULL, NULL };
-    if (!sw_debug_panel || esp_lcd_rgb_panel_get_frame_buffer(sw_debug_panel, 2, &fb[0], &fb[1]) != ESP_OK || !fb[which & 1]) {
+    if (!sw_debug_panel || esp_lcd_rgb_panel_get_frame_buffer(sw_debug_panel, 1, &fb[0]) != ESP_OK || !fb[which & 1]) {
         send("SNAPERR\n", 8);
         return;
     }
@@ -205,7 +205,7 @@ static void debug_task(void *arg)
             void *fb[2] = { NULL, NULL };
             char b[128];
             int l = 0;
-            if (sw_debug_panel && esp_lcd_rgb_panel_get_frame_buffer(sw_debug_panel, 2, &fb[0], &fb[1]) == ESP_OK) {
+            if (sw_debug_panel && esp_lcd_rgb_panel_get_frame_buffer(sw_debug_panel, 1, &fb[0]) == ESP_OK) {
                 const size_t n = 800 * 480 * 2;
                 uint8_t *tmp = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
                 int64_t t0 = esp_timer_get_time();

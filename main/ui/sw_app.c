@@ -224,13 +224,14 @@ static void set_action_text(const char *action, const char *txt)
 }
 
 static bool g_force_dark;   /* Debug-Kanal: Licht bleibt aus (nachts testen) */
+static int g_light_test = -1;   /* Debug-Kanal: feste Helligkeit (Kameratest), nicht gespeichert */
 void sw_app_force_dark(bool on);
 
 static void apply_backlight(void)
 {
     if (!g_backlight) return;
     static int last = -1;
-    int v = (ov_sleep || g_force_dark) ? 0 : (s.night ? 20 : s.brightness);
+    int v = (ov_sleep || g_force_dark) ? 0 : g_light_test >= 0 ? g_light_test : (s.night ? 20 : s.brightness);
     if (v != last) {
         last = v;
         g_backlight(v);
@@ -1121,6 +1122,11 @@ void sw_app_debug_go(const char *action)
     if (!strcmp(action, "scroll:bottom")) {   /* Test: scrollbaren Bereich ganz nach unten */
         for (int i = 0; i < scr->def->count; i++)
             if (scr->def->nodes[i].scroll) lv_obj_scroll_to_y(scr->objs[i], LV_COORD_MAX, LV_ANIM_OFF);
+        return;
+    }
+    if (!strncmp(action, "light:", 6)) {   /* Test: Helligkeit fest (light:-1 = wieder normal) */
+        g_light_test = atoi(action + 6);
+        apply_backlight();
         return;
     }
     if (!strcmp(action, "scroll:anim")) {   /* Test: animiert ganz nach unten (wie Wischen) */
