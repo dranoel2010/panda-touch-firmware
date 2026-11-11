@@ -15,6 +15,8 @@
 #include "esp_crc.h"
 #include "mbedtls/base64.h"
 #include "esp_log.h"
+#include "bsp/pandatouch.h"
+#include "driver/i2c_master.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
@@ -234,6 +236,25 @@ static void debug_task(void *arg)
                 l += snprintf(b + l, sizeof(b) - l, " [%ld %ld %ld]", (long)s_marks[k][0], (long)s_marks[k][1], (long)s_marks[k][2]);
             }
             l += snprintf(b + l, sizeof(b) - l, " last=%ld,%ld-%ld,%ld", (long)s_area.x1, (long)s_area.y1, (long)s_area.x2, (long)s_area.y2);
+            b[l++] = '\n';
+            send(b, l);
+        }
+        else if (!strcmp(line, "i2cscan")) {   /* Geräte auf beiden I2C-Bussen suchen (Akku-Chip?) */
+            char b[256];
+            int l = snprintf(b, sizeof(b), "I2C0:");
+            i2c_master_bus_handle_t bus0 = bsp_i2c_get_handle();
+            for (int a = 0x08; bus0 && a < 0x78; a++)
+                if (i2c_master_probe(bus0, a, 50) == ESP_OK) l += snprintf(b + l, sizeof(b) - l, " %02x", a);
+            static i2c_master_bus_handle_t bus1;
+            if (!bus1) {
+                i2c_master_bus_config_t c = { .i2c_port = I2C_NUM_1, .sda_io_num = BSP_EXT_I2C_SDA, .scl_io_num = BSP_EXT_I2C_SCL,
+                                              .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7,
+                                              .flags.enable_internal_pullup = true };
+                i2c_new_master_bus(&c, &bus1);
+            }
+            l += snprintf(b + l, sizeof(b) - l, " | I2C1:");
+            for (int a = 0x08; bus1 && a < 0x78; a++)
+                if (i2c_master_probe(bus1, a, 50) == ESP_OK) l += snprintf(b + l, sizeof(b) - l, " %02x", a);
             b[l++] = '\n';
             send(b, l);
         }
