@@ -7,11 +7,17 @@
  */
 #include "sw_render.h"
 #include "sw_text.h"
+#include "src/core/lv_refr_private.h"
+#include "src/display/lv_display_private.h"
+#include "src/draw/lv_draw_private.h"
+#include "src/core/lv_obj_draw_private.h"
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #define GRAD_ALLOC(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM)   /* internes RAM für WLAN freihalten */
+#define BIG_FREE(p) heap_caps_free(p)
 #else
 #define GRAD_ALLOC(n) lv_malloc(n)
+#define BIG_FREE(p) lv_free(p)
 #endif
 #include <math.h>
 #include <stdarg.h>
@@ -20,7 +26,7 @@
 #include <string.h>
 
 static sw_action_cb_t s_action_cb;
-int sw_prof_skip;   /* nur zur Messung: 1 = keine Schatten, 2 = keine Flächen, 4 = keine Texte */
+int sw_prof_skip;   /* nur zur Messung: 1 = keine Schatten, 2 = keine Flächen, 4 = keine Texte, 8 = kein Scrollbild */
 
 typedef struct {
     sw_screen_t *scr;
@@ -422,6 +428,7 @@ static void apply_variant(lv_obj_t *obj, box_rt_t *rt)
     sw_screen_t *s = rt->scr;
     if (st) {
         lv_obj_set_style_opa_layered(obj, st->opacity, 0);
+        sw_render_touch(obj);
         lv_obj_set_style_translate_y(obj, st->translate_y, 0);
         for (uint16_t i = 0; i < s->def->count; i++) {
             const sw_node_t *c = &s->def->nodes[i];
@@ -430,6 +437,7 @@ static void apply_variant(lv_obj_t *obj, box_rt_t *rt)
             else if (c->kind == SW_N_ICON) lv_obj_set_style_image_recolor(s->objs[i], st->text_color, 0);
         }
     }
+    sw_render_touch(obj);
     lv_obj_invalidate(obj);
 }
 
@@ -500,6 +508,7 @@ static void range_event(lv_event_t *e)
         int32_t v = n->vmin + (int32_t)lround(f * (n->vmax - n->vmin) / step) * step;
         if (v != r->value) {
             r->value = v;
+            sw_render_touch(obj);
             lv_obj_invalidate(obj);
             if (s_field_cb && n->field) s_field_cb(n->field, v, NULL);
         }
@@ -525,9 +534,392 @@ void sw_range_set(sw_screen_t *s, int idx, int32_t v)
         lv_event_dsc_t *d = lv_obj_get_event_dsc(o, i);
         if (lv_event_dsc_get_cb(d) == range_event) {
             ((range_rt_t *)lv_event_dsc_get_user_data(d))->value = v;
+            sw_render_touch(o);
             lv_obj_invalidate(o);
         }
     }
+}
+
+
+/* ------------------------------------------------------------------ Scrollbild
+ * Ein scrollbarer Bereich wird einmal vollständig (ganze Inhaltshöhe) in ein RGB565-Bild im PSRAM gezeichnet,
+ * in Häppchen im Leerlauf. Während gescrollt wird, zeichnet der Bereich nur noch den passenden Ausschnitt
+ * dieses Bildes (reines Kopieren) statt aller Schatten, Verläufe und Texte. Ändert sich etwas im Inhalt
+ * (Text, Zustand, Regler …), werden die betroffenen Zeilen im Bild neu gezeichnet. */
+typedef struct scache {
+    lv_obj_t *cont;
+    uint16_t *px;
+    int32_t w, h;        /* Bildgröße = Breite des Bereichs × Inhaltshöhe */
+    int32_t done;        /* Zeilen 0..done-1 sind gezeichnet */
+    int32_t d0, d1;      /* veraltete Zeilen [d0, d1) (Inhaltskoordinaten) */
+    bool active;         /* es wird gescrollt: Bild statt Inhalt zeichnen */
+    bool probed;
+    int32_t nt, nb;      /* Randzeilen oben/unten, in die Darunterliegendes hineinragt */
+    uint16_t *under;     /* deren Pixel ohne Inhalt (nt + nb Zeilen) */
+    uint16_t *comp;      /* je Bild zusammengesetzt: Inhalt, wo er deckt, sonst Darunterliegendes */
+    lv_image_dsc_t img_t, img_b;
+    uint32_t born;
+    lv_image_dsc_t img;
+    struct scache *next;
+} scache_t;
+static scache_t *s_scaches;
+static lv_timer_t *s_sc_timer;
+#define SC_CHUNK 48      /* Zeilen je Leerlauf-Häppchen */
+
+static int32_t sc_content_y0(lv_obj_t *c)
+{
+    lv_area_t a;
+    lv_obj_get_coords(c, &a);
+    return a.y1 - lv_obj_get_scroll_top(c);
+}
+static int32_t sc_content_h(lv_obj_t *c)
+{
+    return lv_obj_get_scroll_top(c) + lv_obj_get_height(c) + LV_MAX(0, lv_obj_get_scroll_bottom(c));
+}
+
+/* Objekte in einen RGB565-Puffer zeichnen (wie lv_snapshot, aber ohne Beschnitt durch Eltern).
+ * area: Bildschirmbereich, der dem Puffer entspricht; objs: n Objekte in Zeichenreihenfolge. */
+static void render_into(uint16_t *px, int32_t w, const lv_area_t *area, lv_obj_t *const *objs, uint32_t n)
+{
+    int32_t h = lv_area_get_height(area);
+    uint16_t bg = lv_color_to_u16(SW_SURFACE);
+    for (int32_t i = 0; i < w * h; i++) px[i] = bg;
+    if (!n) return;
+    lv_draw_buf_t buf;
+    lv_draw_buf_init(&buf, w, h, LV_COLOR_FORMAT_RGB565, w * 2, px, (uint32_t)w * h * 2);
+    lv_layer_t layer;
+    lv_layer_init(&layer);
+    lv_display_t *disp = lv_obj_get_display(objs[0]);
+    layer.draw_buf = &buf;
+    layer.display = disp;
+    layer.color_format = LV_COLOR_FORMAT_RGB565;
+    layer.buf_area = *area;
+    layer._clip_area = *area;
+    layer.phy_clip_area = *area;
+    lv_draw_unit_send_event(NULL, LV_EVENT_CHILD_CREATED, &layer);
+    lv_display_t *disp_old = lv_refr_get_disp_refreshing();
+    lv_layer_t *head_old = disp->layer_head;
+    disp->layer_head = &layer;
+    lv_refr_set_disp_refreshing(disp);
+    for (uint32_t i = 0; i < n; i++) lv_obj_refr(&layer, objs[i]);
+    layer.all_tasks_added = true;
+    while (layer.draw_task_head) {
+#if LV_USE_OS
+        lv_draw_dispatch_wait_for_request();
+#endif
+        lv_draw_dispatch();
+    }
+    disp->layer_head = head_old;
+    lv_refr_set_disp_refreshing(disp_old);
+    lv_draw_unit_send_event(NULL, LV_EVENT_CHILD_DELETED, &layer);
+}
+
+/* Zeilen [r0, r1) des Inhalts ins Bild zeichnen */
+static void sc_render(scache_t *sc, int32_t r0, int32_t r1)
+{
+    lv_obj_t *c = sc->cont;
+    if (r1 <= r0) return;
+    lv_area_t ca;
+    lv_obj_get_coords(c, &ca);
+    int32_t y0 = sc_content_y0(c);
+    lv_area_t area = { ca.x1, y0 + r0, ca.x1 + sc->w - 1, y0 + r1 - 1 };
+    uint32_t n = lv_obj_get_child_count(c);
+    lv_obj_t **objs = lv_malloc(sizeof(lv_obj_t *) * (n ? n : 1));
+    for (uint32_t i = 0; i < n; i++) objs[i] = lv_obj_get_child(c, i);
+    if (n) render_into(sc->px + r0 * sc->w, sc->w, &area, objs, n);
+    else {
+        uint16_t bg = lv_color_to_u16(SW_SURFACE);
+        for (int32_t i = r0 * sc->w; i < r1 * sc->w; i++) sc->px[i] = bg;
+    }
+    lv_free(objs);
+}
+
+/* Was vor dem Bereich (darunter) gezeichnet wird und hineinragt (z. B. Unterlängen oder Schatten der
+ * Überschrift), darf das undurchsichtige Bild nicht einfach überdecken. Einmal pixelgenau ermitteln, welche
+ * Randzeilen betroffen sind, und deren Pixel merken; beim Scrollen wird dort Inhalt über Darunterliegendes
+ * gelegt (wo der Inhalt nur Hintergrund ist, scheint das Darunterliegende durch). */
+static void sc_probe(scache_t *sc)
+{
+    lv_obj_t *c = sc->cont, *par = lv_obj_get_parent(c);
+    lv_area_t ca;
+    lv_obj_get_coords(c, &ca);
+    int32_t w = lv_area_get_width(&ca), h = lv_area_get_height(&ca);
+    BIG_FREE(sc->under);
+    BIG_FREE(sc->comp);
+    sc->under = sc->comp = NULL;
+    sc->nt = sc->nb = 0;
+    sc->probed = true;
+    uint32_t n = 0;
+    lv_obj_t *objs[32];
+    for (uint32_t i = 0; par && i < lv_obj_get_child_count(par) && n < 32; i++) {
+        lv_obj_t *sib = lv_obj_get_child(par, i);
+        if (sib == c) break;
+        lv_area_t sa, o;
+        lv_obj_get_coords(sib, &sa);
+        lv_area_increase(&sa, lv_obj_get_ext_draw_size(sib), lv_obj_get_ext_draw_size(sib));
+        if (!lv_obj_has_flag(sib, LV_OBJ_FLAG_HIDDEN) && area_intersect(&o, &sa, &ca)) objs[n++] = sib;
+    }
+    if (!n) return;
+    uint16_t *px = GRAD_ALLOC((size_t)w * h * 2);
+    if (!px) { sc->probed = false; return; }
+    render_into(px, w, &ca, objs, n);
+    uint16_t bg = lv_color_to_u16(SW_SURFACE);
+    int32_t top = -1, bot = h;
+    for (int32_t r = 0; r < h; r++) {
+        bool any = false;
+        for (int32_t x = 0; x < w && !any; x++) any = px[r * w + x] != bg;
+        if (!any) continue;
+        if (r < h / 2) top = r;
+        else if (bot == h) bot = r;
+    }
+    sc->nt = top + 1;
+    sc->nb = h - bot;
+    if (sc->nt + sc->nb) {
+        size_t sz = (size_t)w * (sc->nt + sc->nb) * 2;
+        sc->under = GRAD_ALLOC(sz);
+        sc->comp = GRAD_ALLOC(sz);
+        if (!sc->under || !sc->comp) { sc->probed = false; BIG_FREE(px); return; }
+        memcpy(sc->under, px, (size_t)w * sc->nt * 2);
+        memcpy(sc->under + w * sc->nt, px + w * bot, (size_t)w * sc->nb * 2);
+    }
+#ifndef ESP_PLATFORM
+    if (getenv("SW_BANDDBG")) fprintf(stderr, "rand oben %d unten %d\n", (int)sc->nt, (int)sc->nb);
+#endif
+    BIG_FREE(px);
+}
+
+/* Bild auf Stand bringen; budget = höchstens so viele Zeilen (<=0: alles) */
+static void sc_sync(scache_t *sc, int32_t budget)
+{
+    lv_obj_t *c = sc->cont;
+    lv_obj_update_layout(c);
+    int32_t w = lv_obj_get_width(c), h = sc_content_h(c);
+    if (!sc->px || w != sc->w || h != sc->h) {
+        BIG_FREE(sc->px);
+        sc->px = GRAD_ALLOC((size_t)w * h * 2);
+        sc->w = w;
+        sc->h = h;
+        sc->done = 0;
+        sc->d0 = sc->d1 = 0;
+        if (!sc->px) return;
+    }
+    if (budget <= 0) budget = INT32_MAX;
+    if (!sc->probed) {
+        sc_probe(sc);
+        if (budget != INT32_MAX) return;
+    }
+    if (sc->done < sc->h) {
+        int32_t n = LV_MIN(budget, sc->h - sc->done);
+        sc_render(sc, sc->done, sc->done + n);
+        sc->done += n;
+        return;
+    }
+    if (sc->d1 > sc->d0) {
+        int32_t a = LV_MAX(0, sc->d0), b = LV_MIN(sc->h, sc->d1);
+        sc->d0 = sc->d1 = 0;
+        sc_render(sc, a, b);
+    }
+}
+
+static bool sc_ready(scache_t *sc)
+{
+    if (sw_prof_skip & 8) return false;   /* Messung/Vergleich: Scrollbild aus */
+    return sc->px && sc->probed && sc->done >= sc->h && sc->d1 <= sc->d0 && sc->w == lv_obj_get_width(sc->cont)
+           && sc->h == sc_content_h(sc->cont);
+}
+
+static bool sc_pressed(void)
+{
+    for (lv_indev_t *i = lv_indev_get_next(NULL); i; i = lv_indev_get_next(i))
+        if (lv_indev_get_type(i) == LV_INDEV_TYPE_POINTER && lv_indev_get_state(i) == LV_INDEV_STATE_PRESSED) return true;
+    return false;
+}
+
+static void sc_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (sc_pressed()) return;   /* Berührung hat Vorrang */
+    for (scache_t *sc = s_scaches; sc; sc = sc->next) {
+        if (lv_tick_elaps(sc->born) < 400) continue;   /* erst den neuen Bildschirm zeigen */
+        if (!sc_ready(sc)) {
+            sc_sync(sc, SC_CHUNK);
+            return;   /* ein Häppchen je Durchlauf */
+        }
+    }
+}
+
+/* Ein Objekt hat sich geändert: seine Zeilen im Scrollbild als veraltet markieren */
+void sw_render_touch(lv_obj_t *o)
+{
+    if (!s_scaches || !o) return;
+    for (lv_obj_t *p = lv_obj_get_parent(o); p; p = lv_obj_get_parent(p)) {
+        for (scache_t *sc = s_scaches; sc; sc = sc->next) {
+            if (sc->cont != p) continue;
+            lv_area_t a;
+            lv_obj_get_coords(o, &a);
+            int32_t ext = lv_obj_get_ext_draw_size(o) + 8;
+            int32_t y0 = sc_content_y0(p);
+            int32_t r0 = a.y1 - ext - y0, r1 = a.y2 + ext + 1 - y0;
+            if (sc->d1 <= sc->d0) { sc->d0 = r0; sc->d1 = r1; }
+            else { sc->d0 = LV_MIN(sc->d0, r0); sc->d1 = LV_MAX(sc->d1, r1); }
+            return;
+        }
+    }
+}
+
+/* Hintergrund (--surface) des Bildschirms; ausgespart, wo gerade ein Scrollbild deckend darüber kommt */
+#ifdef ESP_PLATFORM
+#include "esp_timer.h"
+int64_t sw_t_root, sw_t_sc0, sw_t_sc1;
+#define TMARK(v) (v) = esp_timer_get_time()
+#else
+#define TMARK(v)
+#endif
+static void root_event(lv_event_t *e)
+{
+    TMARK(sw_t_root);
+    if (sw_prof_skip & 32) return;
+    lv_obj_t *root = lv_event_get_current_target_obj(e);
+    lv_layer_t *layer = lv_event_get_layer(e);
+    lv_area_t all;
+    lv_obj_get_coords(root, &all);
+    lv_area_t hole = { 0, 0, -1, -1 };
+    for (scache_t *sc = s_scaches; sc; sc = sc->next) {
+        if (lv_obj_get_parent(sc->cont) != root || !sc->active || !sc_ready(sc)) continue;
+        lv_obj_get_coords(sc->cont, &hole);
+        break;
+    }
+    lv_draw_rect_dsc_t r;
+    lv_draw_rect_dsc_init(&r);
+    r.bg_color = SW_SURFACE;
+    r.bg_opa = LV_OPA_COVER;
+    if (hole.x2 < hole.x1 || hole.y2 < hole.y1) {
+        lv_draw_rect(layer, &r, &all);
+        return;
+    }
+    lv_area_t parts[4] = {
+        { all.x1, all.y1, all.x2, hole.y1 - 1 },
+        { all.x1, hole.y2 + 1, all.x2, all.y2 },
+        { all.x1, hole.y1, hole.x1 - 1, hole.y2 },
+        { hole.x2 + 1, hole.y1, all.x2, hole.y2 },
+    };
+    for (int i = 0; i < 4; i++)
+        if (parts[i].x1 <= parts[i].x2 && parts[i].y1 <= parts[i].y2) lv_draw_rect(layer, &r, &parts[i]);
+}
+
+static void scache_event(lv_event_t *e)
+{
+    scache_t *sc = lv_event_get_user_data(e);
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_DELETE) {
+        for (scache_t **pp = &s_scaches; *pp; pp = &(*pp)->next)
+            if (*pp == sc) { *pp = sc->next; break; }
+        BIG_FREE(sc->px);
+        BIG_FREE(sc->under);
+        BIG_FREE(sc->comp);
+        lv_free(sc);
+        return;
+    }
+    if (code == LV_EVENT_SCROLL_BEGIN) {
+        sc_sync(sc, 0);   /* fehlende/veraltete Zeilen jetzt sofort */
+        if (sc->d1 > sc->d0 || sc->done < sc->h) sc_sync(sc, 0);
+        sc->active = true;
+        return;
+    }
+    if (code == LV_EVENT_SCROLL) {
+        if (sc->active && !sc_ready(sc)) { sc_sync(sc, 0); sc_sync(sc, 0); }
+        return;
+    }
+    if (code == LV_EVENT_SCROLL_END) {
+        sc->active = false;
+        /* Randzeilen sind beim Scrollen nur angenähert (halbtransparenter Inhalt über Darunterliegendem):
+         * im Stillstand exakt nachzeichnen */
+        lv_area_t ca;
+        lv_obj_get_coords(sc->cont, &ca);
+        if (sc->nt) { lv_area_t t = { ca.x1, ca.y1, ca.x2, ca.y1 + sc->nt - 1 }; lv_obj_invalidate_area(sc->cont, &t); }
+        if (sc->nb) { lv_area_t b = { ca.x1, ca.y2 - sc->nb + 1, ca.x2, ca.y2 }; lv_obj_invalidate_area(sc->cont, &b); }
+        return;
+    }
+    if (code == LV_EVENT_DRAW_MAIN_END) {
+        TMARK(sw_t_sc0);
+        if (!sc->active || !sc_ready(sc)) return;
+        lv_layer_t *layer = lv_event_get_layer(e);
+        lv_obj_t *c = sc->cont;
+        lv_area_t ca;
+        lv_obj_get_coords(c, &ca);
+        const int32_t w = sc->w, y0 = sc_content_y0(c);
+        lv_area_t save = layer->_clip_area, clip;
+        /* Mitte: Ausschnitt des Scrollbilds */
+        sc->img.header.magic = LV_IMAGE_HEADER_MAGIC;
+        sc->img.header.cf = LV_COLOR_FORMAT_RGB565;
+        sc->img.header.w = w;
+        sc->img.header.h = sc->h;
+        sc->img.header.stride = w * 2;
+        sc->img.data = (const uint8_t *)sc->px;
+        sc->img.data_size = (uint32_t)w * sc->h * 2;
+        lv_draw_image_dsc_t d;
+        lv_draw_image_dsc_init(&d);
+        d.src = &sc->img;
+        lv_area_t a = { ca.x1, y0, ca.x1 + w - 1, y0 + sc->h - 1 };
+        lv_area_t mid = { ca.x1, ca.y1 + sc->nt, ca.x2, ca.y2 - sc->nb };
+        if (area_intersect(&clip, &save, &mid)) {
+            layer->_clip_area = clip;
+            if (!(sw_prof_skip & 16)) lv_draw_image(layer, &d, &a);
+        }
+        if (sw_prof_skip & 64) { layer->_clip_area = save; layer->opa = LV_OPA_TRANSP; TMARK(sw_t_sc1); return; }
+        /* Ränder: Inhalt über Darunterliegendem */
+        const uint16_t bg = lv_color_to_u16(SW_SURFACE);
+        for (int band = 0; band < 2; band++) {
+            int32_t rows = band ? sc->nb : sc->nt;
+            if (!rows) continue;
+            int32_t sy = band ? ca.y2 - rows + 1 : ca.y1;   /* erste Bildschirmzeile */
+            lv_area_t ba = { ca.x1, sy, ca.x1 + w - 1, sy + rows - 1 };
+            if (!area_intersect(&clip, &save, &ba)) continue;
+            const uint16_t *under = sc->under + (band ? sc->nt * w : 0);
+            uint16_t *comp = sc->comp + (band ? sc->nt * w : 0);
+            for (int32_t r = 0; r < rows; r++) {
+                int32_t cr = sy + r - y0;
+                const uint16_t *u = under + r * w;
+                uint16_t *o = comp + r * w;
+                if (cr < 0 || cr >= sc->h) { memcpy(o, u, w * 2); continue; }
+                const uint16_t *src = sc->px + cr * w;
+                for (int32_t x = 0; x < w; x++) o[x] = src[x] == bg ? u[x] : src[x];
+            }
+            lv_image_dsc_t *im = band ? &sc->img_b : &sc->img_t;
+            *im = sc->img;
+            im->header.h = rows;
+            im->data = (const uint8_t *)comp;
+            im->data_size = (uint32_t)w * rows * 2;
+            lv_draw_image_dsc_init(&d);
+            d.src = im;
+            layer->_clip_area = clip;
+            lv_draw_image(layer, &d, &ba);
+        }
+        /* Scrollleiste (sonst in DRAW_POST, das bei übersprungenem Inhalt entfällt) */
+        lv_area_t hor, ver;
+        lv_obj_get_scrollbar_area(c, &hor, &ver);
+        if (lv_area_get_size(&ver) > 0 && area_intersect(&clip, &save, &ca)) {
+            layer->_clip_area = clip;
+            lv_draw_rect_dsc_t r;
+            lv_draw_rect_dsc_init(&r);
+            lv_obj_init_draw_rect_dsc(c, LV_PART_SCROLLBAR, &r);
+            lv_draw_rect(layer, &r, &ver);
+        }
+        layer->_clip_area = save;
+        layer->opa = LV_OPA_TRANSP;   /* Kinder überspringen; lv_obj_refr stellt die Deckkraft danach wieder her */
+        TMARK(sw_t_sc1);
+    }
+}
+
+static void scache_attach(lv_obj_t *o)
+{
+    scache_t *sc = lv_malloc_zeroed(sizeof(*sc));
+    sc->cont = o;
+    sc->born = lv_tick_get();
+    sc->next = s_scaches;
+    s_scaches = sc;
+    lv_obj_add_event_cb(o, scache_event, LV_EVENT_ALL, sc);
+    if (!s_sc_timer) s_sc_timer = lv_timer_create(sc_timer_cb, 20, NULL);
 }
 
 /* ------------------------------------------------------------------ Aufbau */
@@ -567,8 +959,7 @@ static sw_screen_t *build(const sw_screen_def_t *def, lv_obj_t *parent, int only
     lv_obj_remove_style_all(s->root);
     lv_obj_set_size(s->root, 800, 480);
     if (only_root < 0) {
-        lv_obj_set_style_bg_color(s->root, SW_SURFACE, 0);
-        lv_obj_set_style_bg_opa(s->root, LV_OPA_COVER, 0);
+        lv_obj_add_event_cb(s->root, root_event, LV_EVENT_DRAW_MAIN, NULL);
     }
     lv_obj_remove_flag(s->root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
@@ -594,6 +985,7 @@ static sw_screen_t *build(const sw_screen_def_t *def, lv_obj_t *parent, int only
             rt->scr = s;
             rt->idx = i;
             lv_obj_add_event_cb(o, box_event, LV_EVENT_ALL, rt);
+            if (n->scroll) scache_attach(o);
             if (n->action) lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
             else lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
             if (n->selected) lv_obj_add_state(o, LV_STATE_CHECKED);
@@ -788,6 +1180,7 @@ void sw_set_disabled(sw_screen_t *s, int idx, bool dis)
     /* button:disabled { opacity: .4 } */
     box_rt_t *rt = rt_of(o);
     if (rt) apply_variant(o, rt);
+    sw_render_touch(o);
     lv_obj_set_style_opa_layered(o, dis ? 102 : (rt && cur_style(o, rt) ? cur_style(o, rt)->opacity : 255), 0);
 }
 
@@ -797,12 +1190,15 @@ void sw_set_hidden(sw_screen_t *s, int idx, bool hidden)
     if (!o) return;
     if (hidden) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+    sw_render_touch(o);
 }
 
 void sw_set_icon(sw_screen_t *s, int idx, const lv_image_dsc_t *img)
 {
     lv_obj_t *o = sw_obj(s, idx);
-    if (o) lv_image_set_src(o, img);
+    if (!o) return;
+    lv_image_set_src(o, img);
+    sw_render_touch(o);
 }
 
 void sw_set_color(sw_screen_t *s, int idx, lv_color_t c)
@@ -811,6 +1207,7 @@ void sw_set_color(sw_screen_t *s, int idx, lv_color_t c)
     if (!o) return;
     if (s->def->nodes[idx].kind == SW_N_LABEL) lv_obj_set_style_text_color(o, c, 0);
     else lv_obj_set_style_image_recolor(o, c, 0);
+    sw_render_touch(o);
 }
 
 void sw_set_box_style(sw_screen_t *s, int idx, const sw_style_t *st)
@@ -826,7 +1223,9 @@ void sw_set_box_style(sw_screen_t *s, int idx, const sw_style_t *st)
 void sw_set_opa(sw_screen_t *s, int idx, lv_opa_t opa)
 {
     lv_obj_t *o = sw_obj(s, idx);
-    if (o) lv_obj_set_style_opa_layered(o, opa, 0);
+    if (!o) return;
+    lv_obj_set_style_opa_layered(o, opa, 0);
+    sw_render_touch(o);
 }
 
 void sw_set_height_from_bottom(sw_screen_t *s, int idx, int32_t h)
@@ -835,6 +1234,9 @@ void sw_set_height_from_bottom(sw_screen_t *s, int idx, int32_t h)
     if (!o) return;
     const sw_node_t *n = &s->def->nodes[idx];
     int32_t bottom = n->y + n->h;
+    sw_render_touch(o);
     lv_obj_set_y(o, bottom - h);
     lv_obj_set_height(o, h);
+    lv_obj_update_layout(o);
+    sw_render_touch(o);
 }

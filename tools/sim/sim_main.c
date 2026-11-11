@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include "lvgl.h"
 #include "ui/gen/sw_gen_screens.h"
+#include "src/core/lv_obj_scroll_private.h"
 #include "ui/sw_app.h"
 #include "ui/sw_render.h"
 
@@ -40,6 +41,12 @@ static void write_ppm(const char *path)
     fclose(f);
 }
 
+static lv_obj_tree_walk_res_t find_scroll(lv_obj_t *o, void *ud)
+{
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_SCROLLABLE) && lv_obj_get_scroll_bottom(o) > 0) { *(lv_obj_t **)ud = o; return LV_OBJ_TREE_WALK_END; }
+    return LV_OBJ_TREE_WALK_NEXT;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) { fprintf(stderr, "Aufruf: sim <ausgabe.ppm> [aktion ...] | sim --screen <name> <ausgabe.ppm>\n"); return 1; }
@@ -57,6 +64,7 @@ int main(int argc, char **argv)
         return 0;
     }
     sw_app_start(lv_screen_active(), NULL, false);
+    if (getenv("SW_NOCACHE")) { extern int sw_prof_skip; sw_prof_skip = 8; }
     for (int i = 2; i < argc; i++) {
         if (!strncmp(argv[i], "wait:", 5)) {   /* Zeit vergehen lassen (Timer, Animationen) */
             int ms = atoi(argv[i] + 5);
@@ -65,6 +73,21 @@ int main(int argc, char **argv)
         }
         sw_app_debug_go(argv[i]);
         lv_timer_handler();
+    }
+    if (getenv("SW_SCROLLPROF")) {   /* Zeitmessung: n Scroll-Bilder (mit Scrollbild) */
+        int n = atoi(getenv("SW_SCROLLPROF"));
+        lv_obj_t *c = NULL;
+        lv_obj_tree_walk(lv_screen_active(), find_scroll, &c);
+        if (!c) { printf("kein Scrollbereich\n"); return 1; }
+        lv_obj_send_event(c, LV_EVENT_SCROLL_BEGIN, NULL);
+        uint32_t t0 = tick();
+        for (int k = 0; k < n; k++) {
+            lv_obj_scroll_by_raw(c, 0, (k / 50) % 2 ? 3 : -3);
+            lv_obj_send_event(c, LV_EVENT_SCROLL, NULL);
+            lv_refr_now(d);
+        }
+        printf("%.2f ms je Scroll-Bild\n", (tick() - t0) / (double)n);
+        return 0;
     }
     if (getenv("SW_PROF")) {   /* Zeitmessung: Bildschirm 30× komplett neu zeichnen */
         extern int sw_prof_skip;

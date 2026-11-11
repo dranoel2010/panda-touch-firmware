@@ -10,6 +10,10 @@
 #include "esp_lvgl_port.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "bsp/pandatouch.h"
+#include "driver/gpio.h"
+#include "esp_lcd_panel_rgb.h"
+#include "esp_lcd_panel_ops.h"
 #include "sw_app.h"
 
 void sw_debug_start(void);
@@ -40,13 +44,68 @@ esp_err_t bsp_display_indev_init(lv_display_t *disp);   /* bsp_touch.c */
 #define ANZEIGE_DIREKT 1
 #endif
 
+/* Bildtakt und Zwischenpuffer des RGB-Displays.
+ * Das BSP füllt kleine SRAM-Zwischenpuffer per Prozessor (Interrupt) aus dem PSRAM-Bildspeicher; bei 23 MHz
+ * kostet das fast einen ganzen Kern und die halbe PSRAM-Bandbreite. Ohne Zwischenpuffer liest der
+ * LCD-DMA den Bildspeicher selbst. */
+#ifndef ANZEIGE_PCLK_HZ
+#define ANZEIGE_PCLK_HZ BSP_LCD_PIXEL_CLOCK_HZ
+#endif
+#ifndef ANZEIGE_BOUNCE_ZEILEN
+#define ANZEIGE_BOUNCE_ZEILEN 0
+#endif
+
+/* wie bsp_display_new, aber mit eigenem Takt / Zwischenpuffer */
+static esp_err_t panel_neu(esp_lcd_panel_handle_t *ret)
+{
+    ESP_ERROR_CHECK(bsp_display_brightness_init());
+    gpio_config_t io = { .pin_bit_mask = BIT64(BSP_LCD_RST), .mode = GPIO_MODE_OUTPUT };
+    ESP_ERROR_CHECK(gpio_config(&io));
+    gpio_set_level(BSP_LCD_RST, 0);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    gpio_set_level(BSP_LCD_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_lcd_rgb_panel_config_t c = {
+        .clk_src = LCD_CLK_SRC_DEFAULT,
+        .timings = {
+            .pclk_hz = ANZEIGE_PCLK_HZ,
+            .h_res = BSP_LCD_H_RES,
+            .v_res = BSP_LCD_V_RES,
+            .hsync_pulse_width = 4,
+            .hsync_back_porch = 8,
+            .hsync_front_porch = 8,
+            .vsync_pulse_width = 4,
+            .vsync_back_porch = 16,
+            .vsync_front_porch = 16,
+            .flags.pclk_active_neg = true,
+        },
+        .data_width = 16,
+        .in_color_format = LCD_COLOR_FMT_RGB565,
+        .num_fbs = 2,
+        .bounce_buffer_size_px = BSP_LCD_H_RES * ANZEIGE_BOUNCE_ZEILEN,
+        .hsync_gpio_num = GPIO_NUM_NC,
+        .vsync_gpio_num = GPIO_NUM_NC,
+        .de_gpio_num = BSP_LCD_DE,
+        .pclk_gpio_num = BSP_LCD_PCLK,
+        .data_gpio_nums = { BSP_LCD_DATA0, BSP_LCD_DATA1, BSP_LCD_DATA2, BSP_LCD_DATA3, BSP_LCD_DATA4, BSP_LCD_DATA5,
+                            BSP_LCD_DATA6, BSP_LCD_DATA7, BSP_LCD_DATA8, BSP_LCD_DATA9, BSP_LCD_DATA10, BSP_LCD_DATA11,
+                            BSP_LCD_DATA12, BSP_LCD_DATA13, BSP_LCD_DATA14, BSP_LCD_DATA15 },
+        .disp_gpio_num = GPIO_NUM_NC,
+        .flags.fb_in_psram = true,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&c, ret));
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(*ret));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(*ret));
+    return ESP_OK;
+}
+
 /* Display wie im BSP, Darstellungsart siehe oben. */
 static lv_display_t *anzeige_starten(void)
 {
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     if (lvgl_port_init(&port_cfg) != ESP_OK) return NULL;
     esp_lcd_panel_handle_t panel = NULL;
-    if (bsp_display_new(NULL, &panel, NULL) != ESP_OK) return NULL;
+    if (panel_neu(&panel) != ESP_OK) return NULL;
     const lvgl_port_display_cfg_t disp_cfg = {
         .panel_handle = panel,
         .buffer_size = ANZEIGE_DIREKT ? BSP_LCD_H_RES * BSP_LCD_V_RES : BSP_LCD_H_RES * 60,

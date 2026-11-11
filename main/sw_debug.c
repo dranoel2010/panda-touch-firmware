@@ -123,14 +123,42 @@ static void fbsnap(int which)
     esp_log_level_set("*", ESP_LOG_INFO);
 }
 
-/* Dauer der letzten echten Display-Aktualisierungen */
-static int64_t s_refr_t0;
-static uint32_t s_refr_ms[8];
+/* Dauer der letzten echten Display-Aktualisierungen, aufgeteilt:
+ * gesamt / davor (Abgleich der Puffer) / Zeichnen / Übergabe ans Display (inkl. Warten auf VSYNC) */
+static int64_t s_t[4];
+static uint32_t s_refr_ms[8], s_part[8][3];
 static int s_refr_n;
+static lv_area_t s_area;
+static int32_t s_marks[8][3];
+static int64_t s_w0, s_w1;
 static void refr_cb(lv_event_t *e)
 {
-    if (lv_event_get_code(e) == LV_EVENT_REFR_START) s_refr_t0 = esp_timer_get_time();
-    else s_refr_ms[s_refr_n++ & 7] = (uint32_t)((esp_timer_get_time() - s_refr_t0) / 1000);
+    int64_t now = esp_timer_get_time();
+    switch (lv_event_get_code(e)) {
+    case LV_EVENT_REFR_START: s_t[0] = s_t[1] = s_t[2] = s_t[3] = now; break;
+    case LV_EVENT_RENDER_START: s_t[1] = now; break;
+    case LV_EVENT_FLUSH_START: {
+        s_t[2] = now;
+        const lv_area_t *a = lv_event_get_param(e);
+        if (a) s_area = *a;
+        break;
+    }
+    case LV_EVENT_FLUSH_FINISH: s_t[3] = now; break;
+    case LV_EVENT_FLUSH_WAIT_START: s_w0 = now; break;
+    case LV_EVENT_FLUSH_WAIT_FINISH: s_w1 = now; break;
+    default: {
+        int k = s_refr_n++ & 7;
+        s_refr_ms[k] = (uint32_t)((now - s_t[0]) / 1000);
+        s_part[k][0] = (uint32_t)((s_t[1] - s_t[0]) / 1000);
+        s_part[k][1] = (uint32_t)((s_t[2] - s_t[1]) / 1000);
+        s_part[k][2] = (uint32_t)((s_t[3] - s_t[2]) / 1000);
+        extern int64_t sw_t_root, sw_t_sc0, sw_t_sc1;
+        (void)sw_t_root;
+        s_marks[k][0] = (int32_t)((s_w0 - s_t[1]) / 100) * 1000 + (int32_t)((s_w1 - s_w0) / 100);
+        s_marks[k][1] = (int32_t)((sw_t_sc0 - s_t[1]) / 100);
+        s_marks[k][2] = (int32_t)((sw_t_sc1 - s_t[1]) / 100);
+    }
+    }
 }
 
 static void debug_task(void *arg)
@@ -173,10 +201,39 @@ static void debug_task(void *arg)
                              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
             send(b, l);
         }
-        else if (!strcmp(line, "perf")) {
+        else if (!strcmp(line, "bench")) {   /* PSRAM-Durchsatz: Bildspeicher kopieren/füllen (Bild ist danach kurz falsch) */
+            void *fb[2] = { NULL, NULL };
             char b[128];
+            int l = 0;
+            if (sw_debug_panel && esp_lcd_rgb_panel_get_frame_buffer(sw_debug_panel, 2, &fb[0], &fb[1]) == ESP_OK) {
+                const size_t n = 800 * 480 * 2;
+                uint8_t *tmp = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+                int64_t t0 = esp_timer_get_time();
+                memcpy(tmp, fb[0], n);
+                int64_t t1 = esp_timer_get_time();
+                memset(tmp, 0x55, n);
+                int64_t t2 = esp_timer_get_time();
+                volatile uint32_t acc = 0;
+                for (size_t i = 0; i < n / 4; i++) acc += ((uint32_t *)fb[0])[i];
+                int64_t t3 = esp_timer_get_time();
+                free(tmp);
+                l = snprintf(b, sizeof(b), "BENCH copy %lld us, fill %lld us, read %lld us (768 KB)\n", t1 - t0, t2 - t1, t3 - t2);
+            } else l = snprintf(b, sizeof(b), "BENCH err\n");
+            send(b, l);
+        }
+        else if (!strcmp(line, "perf")) {
+            char b[384];
             int l = snprintf(b, sizeof(b), "PERF");
-            for (int i = 0; i < 8; i++) l += snprintf(b + l, sizeof(b) - l, " %lu", (unsigned long)s_refr_ms[(s_refr_n + i) & 7]);
+            for (int i = 0; i < 8; i++) {
+                int k = (s_refr_n + i) & 7;
+                l += snprintf(b + l, sizeof(b) - l, " %lu(%lu/%lu/%lu)", (unsigned long)s_refr_ms[k], (unsigned long)s_part[k][0],
+                              (unsigned long)s_part[k][1], (unsigned long)s_part[k][2]);
+            }
+            for (int i = 4; i < 8; i++) {
+                int k = (s_refr_n + i) & 7;
+                l += snprintf(b + l, sizeof(b) - l, " [%ld %ld %ld]", (long)s_marks[k][0], (long)s_marks[k][1], (long)s_marks[k][2]);
+            }
+            l += snprintf(b + l, sizeof(b) - l, " last=%ld,%ld-%ld,%ld", (long)s_area.x1, (long)s_area.y1, (long)s_area.x2, (long)s_area.y2);
             b[l++] = '\n';
             send(b, l);
         }
@@ -207,6 +264,11 @@ void sw_debug_start(void)
         lv_display_t *d = lv_display_get_default();
         lv_display_add_event_cb(d, refr_cb, LV_EVENT_REFR_START, NULL);
         lv_display_add_event_cb(d, refr_cb, LV_EVENT_REFR_READY, NULL);
+        lv_display_add_event_cb(d, refr_cb, LV_EVENT_RENDER_START, NULL);
+        lv_display_add_event_cb(d, refr_cb, LV_EVENT_FLUSH_START, NULL);
+        lv_display_add_event_cb(d, refr_cb, LV_EVENT_FLUSH_FINISH, NULL);
+        lv_display_add_event_cb(d, refr_cb, LV_EVENT_FLUSH_WAIT_START, NULL);
+        lv_display_add_event_cb(d, refr_cb, LV_EVENT_FLUSH_WAIT_FINISH, NULL);
         bsp_display_unlock();
     }
     xTaskCreate(debug_task, "debug", 6144, NULL, 2, NULL);

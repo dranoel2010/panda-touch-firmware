@@ -26,3 +26,7 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # Leistung: beide Kerne zeichnen (zwei Zeichen-Einheiten)
 CONFIG_LV_OS_FREERTOS=y
 CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
+# Leistung: 1-ms-Takt, damit LVGL/Zeichen-Threads nicht auf 10-ms-Ticks warten
+CONFIG_FREERTOS_HZ=1000
+# Display: LCD-DMA liest den PSRAM-Bildspeicher selbst; bei Engpass am nächsten VSYNC neu ausrichten
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=y

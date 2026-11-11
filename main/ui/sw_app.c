@@ -6,6 +6,7 @@
  * stammen aus den Messungen des Prototyps (gen/), damit jedes Detail exakt dem Design entspricht.
  */
 #include "sw_app.h"
+#include "src/core/lv_obj_scroll_private.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1120,6 +1121,19 @@ void sw_app_debug_go(const char *action)
     if (!strcmp(action, "scroll:bottom")) {   /* Test: scrollbaren Bereich ganz nach unten */
         for (int i = 0; i < scr->def->count; i++)
             if (scr->def->nodes[i].scroll) lv_obj_scroll_to_y(scr->objs[i], LV_COORD_MAX, LV_ANIM_OFF);
+        return;
+    }
+    if (!strcmp(action, "scroll:anim")) {   /* Test: animiert ganz nach unten (wie Wischen) */
+        for (int i = 0; i < scr->def->count; i++)
+            if (scr->def->nodes[i].scroll) lv_obj_scroll_to_y(scr->objs[i], LV_COORD_MAX, LV_ANIM_ON);
+        return;
+    }
+    if (!strncmp(action, "scroll:hold:", 12)) {   /* Test: mitten im Scrollen anhalten (Scrollbild bleibt aktiv) */
+        for (int i = 0; i < scr->def->count; i++)
+            if (scr->def->nodes[i].scroll) {
+                lv_obj_send_event(scr->objs[i], LV_EVENT_SCROLL_BEGIN, NULL);
+                lv_obj_scroll_by_raw(scr->objs[i], 0, lv_obj_get_scroll_y(scr->objs[i]) - atoi(action + 12));
+            }
         return;
     }
     if (!strcmp(action, "reset")) {   /* Test: Anfangszustand wie nach dem Start (ohne Ruhebildschirm) */

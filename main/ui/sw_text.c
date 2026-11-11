@@ -6,6 +6,7 @@
  * Hier wird in 1/16 px gerechnet (Breite + Kerning + Laufweite) und erst pro Zeichen gerundet.
  */
 #include "sw_text.h"
+#include "sw_render.h"
 #include <string.h>
 
 typedef struct {
@@ -167,6 +168,7 @@ void sw_text_set(lv_obj_t *o, const char *text)
     if (!t || !strcmp(t->text, text)) return;
     lv_free(t->text);
     t->text = lv_strdup(text);
+    sw_render_touch(o);
     lv_obj_invalidate(o);
 }
 
