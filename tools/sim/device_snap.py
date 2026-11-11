@@ -39,7 +39,9 @@ def cmd(c, wait=5):
 
 
 BAUD = int(os.environ.get('SNAPBAUD', '460800'))
-cmd('dark 1')   # nachts: Licht bleibt aus, auch beim Aufwecken
+# Licht bleibt nur aus, wenn DUNKEL=1 gesetzt ist (nachts testen) – sonst stünde das Gerät danach dunkel da
+if os.environ.get('DUNKEL') == '1':
+    cmd('dark 1')
 if BAUD != 115200:
     s.write(f'baud {BAUD}\n'.encode())
     time.sleep(0.3)
