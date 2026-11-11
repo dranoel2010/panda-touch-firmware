@@ -587,6 +587,21 @@ static void patch(void)
                 if (target >= 0 && s.slot >= 0 && s.slot <= 3) lv_obj_set_parent(sw_obj(scr, dot), sw_obj(scr, target));
             }
         }
+#if LIVE
+        {   /* Spulenringe in der echten Spulenfarbe (Rand des Kästchens) */
+            static sw_style_t ring[5];
+            for (int i = 0; i < 5; i++) {
+                char k[16];
+                snprintf(k, sizeof(k), i ? "box:spool#%d" : "box:spool", i + 1);
+                int n = key(k);
+                if (n < 0 || !scr->def->nodes[n].st || !strcmp(dr.material[i], "–")) continue;
+                ring[i] = *scr->def->nodes[n].st;
+                uint32_t c = dr.farbe[i];
+                ring[i].border_c = lv_color_make(c >> 16 & 255, c >> 8 & 255, c & 255);
+                sw_set_box_style(scr, n, &ring[i]);
+            }
+        }
+#endif
         snprintf(buf, sizeof(buf), "%s · %s", s.slots[4].material, s.slot == 4 ? "Aktiv" : "Bereit");
         set_key_text("text:list-item/div/small", buf);
         break;
