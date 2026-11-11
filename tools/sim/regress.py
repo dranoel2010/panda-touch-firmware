@@ -32,6 +32,9 @@ CASES = {
     'modal_cancel': ['nav:control', 'cancel'], 'modal_factory': ['nav:system', 'factory'],
     'modal_restart': ['nav:system', 'restart'], 'busy_homeaxes': ['state:idle', 'nav:movement', 'home-axes'],
     'sleep': ['sleep'], 'press_menu': ['press:nav:menu'],
+    'scroll_system': ['nav:system', 'scroll:bottom'], 'scroll_demo': ['nav:demo', 'scroll:bottom'],
+    'scroll_connection': ['nav:connection', 'scroll:bottom'], 'scroll_files': ['nav:files', 'scroll:bottom'],
+    'scroll_movement': ['nav:movement', 'scroll:bottom'],
 }
 
 

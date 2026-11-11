@@ -5,6 +5,7 @@ Jede Aktion wird wie ein Antippen ausgelöst ("go <aktion>"), danach kommt der S
 Daten kommen als Base64-Zeilen mit CRC32; bei Fehlern wird wiederholt.
 """
 import base64
+import os
 import binascii
 import glob
 import struct
@@ -37,7 +38,14 @@ def cmd(c, wait=5):
         print(f'{c}: Aufbau {buf.split(b"OK ")[1].split()[0].decode()} ms')
 
 
+BAUD = int(os.environ.get('SNAPBAUD', '460800'))
 cmd('dark 1')   # nachts: Licht bleibt aus, auch beim Aufwecken
+if BAUD != 115200:
+    s.write(f'baud {BAUD}\n'.encode())
+    time.sleep(0.3)
+    s.baudrate = BAUD
+    time.sleep(0.1)
+    s.reset_input_buffer()
 for a in sys.argv[2:]:
     if a.startswith('wait:'):
         time.sleep(int(a[5:]) / 1000)
@@ -49,7 +57,7 @@ for attempt in range(4):
     time.sleep(0.3)
     s.reset_input_buffer()
     t0 = time.time()
-    s.write(b'snap\n')
+    s.write((os.environ.get('SNAPCMD', 'snap') + '\n').encode())
     lines, w = [], None
     while True:
         ln = s.readline()
@@ -90,4 +98,8 @@ for attempt in range(4):
     print(f'{w}x{h}, {len(data) // 1024} KB in {time.time() - t0:.1f} s, Prüfsumme ok')
     break
 else:
+    s.write(b'baud 115200\n')
     sys.exit('Schnappschuss fehlgeschlagen')
+if BAUD != 115200:   # zurück auf Standard, damit Logs lesbar bleiben
+    s.write(b'baud 115200\n')
+    time.sleep(0.2)

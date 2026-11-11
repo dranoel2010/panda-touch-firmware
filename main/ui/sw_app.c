@@ -14,6 +14,9 @@
 #include "gen/sw_gen_screens.h"
 #include "sw_render.h"
 #include "sw_text.h"
+#ifdef ESP_PLATFORM
+#include "nvs.h"
+#endif
 
 /* ------------------------------------------------------------------ Zustand (wie defaults() im Prototyp) */
 
@@ -79,6 +82,52 @@ static void defaults(void)
     s.history[0] = (hist_t){ "Kabelclip.3mf", "Fertig", "32 min" };
     s.history[1] = (hist_t){ "Pflanztopf.3mf", "Fertig", "2 h 12 min" };
     s.opt[0] = true; s.opt[2] = true;
+}
+
+/* ------------------------------------------------------------------ Einstellungen merken (wie localStorage im Prototyp) */
+
+static lv_timer_t *save_timer;
+
+static void settings_load(void)
+{
+#ifdef ESP_PLATFORM
+    nvs_handle_t h;
+    if (nvs_open("softwhite", NVS_READONLY, &h) != ESP_OK) return;
+    uint8_t v;
+    if (nvs_get_u8(h, "hell", &v) == ESP_OK && v >= 25 && v <= 100) s.brightness = v;
+    if (nvs_get_u8(h, "timeout", &v) == ESP_OK && (v == 0 || v == 1 || v == 5 || v == 15)) s.timeout_min = v;
+    if (nvs_get_u8(h, "ton", &v) == ESP_OK) s.sound = v;
+    if (nvs_get_u8(h, "nacht", &v) == ESP_OK) s.night = v;
+    if (nvs_get_u8(h, "autoaus", &v) == ESP_OK) s.auto_off = v;
+    nvs_close(h);
+#endif
+}
+
+static void settings_write(lv_timer_t *t)
+{
+    (void)t;
+    save_timer = NULL;
+#ifdef ESP_PLATFORM
+    nvs_handle_t h;
+    if (nvs_open("softwhite", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, "hell", (uint8_t)s.brightness);
+    nvs_set_u8(h, "timeout", (uint8_t)s.timeout_min);
+    nvs_set_u8(h, "ton", s.sound);
+    nvs_set_u8(h, "nacht", s.night);
+    nvs_set_u8(h, "autoaus", s.auto_off);
+    nvs_commit(h);
+    nvs_close(h);
+#endif
+}
+
+/* verzögert speichern: beim Ziehen des Reglers nicht bei jedem Schritt in den Flash schreiben */
+static void settings_save(void)
+{
+    if (save_timer) lv_timer_reset(save_timer);
+    else {
+        save_timer = lv_timer_create(settings_write, 1000, NULL);
+        lv_timer_set_repeat_count(save_timer, 1);
+    }
 }
 
 static bool active(void)
@@ -566,6 +615,7 @@ static void select_next(const char *field)
         s.timeout_min = TIMEOUTS[(timeout_index() + 1) % 4];
         set_select(field, timeout_index());
         reset_idle();
+        settings_save();
     } else if (!strcmp(field, "wifi")) {
         wifi_index = (wifi_index + 1) % n;
         set_select(field, wifi_index);
@@ -590,6 +640,7 @@ static void on_field(const char *field, int32_t v, const char *text)
         s.brightness = v;
         set_key_textf("text:row/strong", "%d %%", (int)v);
         apply_backlight();
+        settings_save();
     } else if (!strncmp(field, "fan:", 4)) {
         int i = atoi(field + 4);
         if (!s.connected) { toast("Drucker offline"); render(); return; }
@@ -772,6 +823,7 @@ static void update_done(void) { toast("Demo 1.0 · Du bist auf dem aktuellen Sta
 static void factory_done(void)
 {
     defaults();
+    settings_save();
     go(R_HOME);
     toast("Demo zurückgesetzt");
 }
@@ -840,9 +892,9 @@ static void dispatch(const char *action)
         else if (!strcmp(k, "usb")) s.usb = !s.usb;
         else if (!strcmp(k, "empty")) s.empty = !s.empty;
         else if (!strcmp(k, "sensor")) s.sensor = !s.sensor;
-        else if (!strcmp(k, "sound")) s.sound = !s.sound;
-        else if (!strcmp(k, "night")) s.night = !s.night;
-        else if (!strcmp(k, "autoOff")) s.auto_off = !s.auto_off;
+        else if (!strcmp(k, "sound")) { s.sound = !s.sound; settings_save(); }
+        else if (!strcmp(k, "night")) { s.night = !s.night; settings_save(); }
+        else if (!strcmp(k, "autoOff")) { s.auto_off = !s.auto_off; settings_save(); }
         else if (!strcmp(k, "developer")) s.developer = !s.developer;
         render();
         if (!strcmp(k, "light")) toast(s.light ? "Licht eingeschaltet" : "Licht ausgeschaltet");
@@ -1043,6 +1095,7 @@ void sw_app_start(lv_obj_t *parent, sw_backlight_cb_t backlight, bool start_asle
     g_parent = parent;
     g_backlight = backlight;
     defaults();
+    settings_load();
     sw_render_set_action_cb(on_action);
     sw_render_set_field_cb(on_field);
     if (start_asleep) sleep_now();   /* vor dem ersten Bild, damit das Licht nie kurz angeht */
@@ -1064,6 +1117,11 @@ void sw_app_force_dark(bool on)
 void sw_app_debug_go(const char *action)
 {
     if (!strncmp(action, "press:", 6)) { sw_debug_press(scr, action + 6); return; }
+    if (!strcmp(action, "scroll:bottom")) {   /* Test: scrollbaren Bereich ganz nach unten */
+        for (int i = 0; i < scr->def->count; i++)
+            if (scr->def->nodes[i].scroll) lv_obj_scroll_to_y(scr->objs[i], LV_COORD_MAX, LV_ANIM_OFF);
+        return;
+    }
     if (!strcmp(action, "reset")) {   /* Test: Anfangszustand wie nach dem Start (ohne Ruhebildschirm) */
         close_modal();
         if (ov_sleep) { sw_screen_free(ov_sleep); ov_sleep = NULL; }

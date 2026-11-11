@@ -483,7 +483,7 @@ def gen_screen(name):
                     n['st_pressed'], n['st_sel_pressed'] = n['st_sel_pressed'], n['st_pressed']
         sc = e.get('scrollBox')
         if sc and sc['sh'] > sc['ch'] + 1:
-            n['scroll'], n['pad_bottom'] = 1, int(round(sc['pad'][2]))
+            n['scroll'], n['pad_bottom'], n['sh'] = 1, int(round(sc['pad'][2])), int(sc['sh'])
         n['key'] = e['action'] or keyname(e, 'box:')
         cls = e['cls'].split()
         node_of[e['i']] = add(n, ('A_' + slug(e['action'])) if e['action'] else ('E_' + slug(cls[0])) if cls else None)
@@ -520,6 +520,14 @@ def gen_screen(name):
         add(dict(kind='SW_N_LABEL', parent=pidx, x=rx, y=ry, w=W, h=0, font=fname, color=col, opa=col[3], ls=ls, key=keyname(e, 'text:'),
                  align={'left': 'SW_AL_LEFT', 'center': 'SW_AL_CENTER', 'right': 'SW_AL_RIGHT'}[al], text=l['text'], inherit=inh),
             'T_' + slug(l['text'], 20))
+
+    # Scrollbereiche: Polsterung unten so wählen, dass die Scrollhöhe genau Chromes scrollHeight entspricht
+    # (Chrome zählt z. B. den unteren Außenabstand des letzten Listeneintrags mit)
+    for ci, n in enumerate(nodes):
+        if n.get('scroll') and n.get('sh'):
+            bottom = max([c['y'] + c['h'] for c in nodes if c['parent'] == ci and c['kind'] != 'SW_N_LABEL'] +
+                         [c['y'] + 30 for c in nodes if c['parent'] == ci and c['kind'] == 'SW_N_LABEL'] + [0])
+            n['pad_bottom'] = max(0, n['sh'] - bottom)
 
     rows = []
     for n in nodes:

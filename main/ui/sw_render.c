@@ -79,6 +79,36 @@ static piece_cache_t *pieces_for(const sw_mask_t *m)
     return c;
 }
 
+static bool area_intersect(lv_area_t *r, const lv_area_t *a, const lv_area_t *b)
+{
+    r->x1 = LV_MAX(a->x1, b->x1);
+    r->y1 = LV_MAX(a->y1, b->y1);
+    r->x2 = LV_MIN(a->x2, b->x2);
+    r->y2 = LV_MIN(a->y2, b->y2);
+    return r->x1 <= r->x2 && r->y1 <= r->y2;
+}
+
+/* Ein Maskenstück zeichnen; tx/ty: in diese Richtung kacheln. Eigene Kachelung statt LVGLs "tile",
+ * weil diese an Clip-Kanten (z. B. Rand des Scrollbereichs) das Muster versetzt. */
+static void draw_piece(lv_layer_t *layer, const lv_draw_image_dsc_t *d, const lv_image_dsc_t *img, const lv_area_t *a,
+                       bool tx, bool ty)
+{
+    int32_t tw = img->header.w, th = img->header.h;
+    lv_area_t save = layer->_clip_area, clip;
+    if (!area_intersect(&clip, &save, a)) return;
+    layer->_clip_area = clip;
+    for (int32_t y = a->y1; y <= a->y2; y += th) {
+        for (int32_t x = a->x1; x <= a->x2; x += tw) {
+            lv_area_t t = { x, y, x + tw - 1, y + th - 1 };
+            lv_area_t o;
+            if (area_intersect(&o, &t, &clip)) lv_draw_image(layer, d, &t);
+            if (!tx) break;
+        }
+        if (!ty) break;
+    }
+    layer->_clip_area = save;
+}
+
 /* Maske in Zielgröße W×H ab (x,y) zeichnen */
 static void draw_mask(lv_layer_t *layer, const sw_mask_t *m, int32_t x, int32_t y, int32_t W, int32_t H,
                       lv_color_t color, lv_opa_t opa)
@@ -123,11 +153,7 @@ static void draw_mask(lv_layer_t *layer, const sw_mask_t *m, int32_t x, int32_t 
             d.recolor = color;
             d.recolor_opa = LV_OPA_COVER;
             d.opa = opa;
-            if (k == 1 || r == 1) {
-                d.tile = 1;
-                d.image_area = a;
-            }
-            lv_draw_image(layer, &d, &a);
+            draw_piece(layer, &d, img, &a, k == 1, r == 1);
         }
     }
 }

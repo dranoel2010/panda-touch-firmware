@@ -57,6 +57,8 @@ static lv_display_t *anzeige_starten(void)
     const lvgl_port_display_rgb_cfg_t rgb_cfg = {
         .flags = { .bb_mode = true, .avoid_tearing = false },
     };
+    extern esp_lcd_panel_handle_t sw_debug_panel;
+    sw_debug_panel = panel;
     lv_display_t *disp = lvgl_port_add_disp_rgb(&disp_cfg, &rgb_cfg);
     if (disp && bsp_display_indev_init(disp) != ESP_OK) ESP_LOGW(TAG, "Touch nicht verfügbar");
     return disp;

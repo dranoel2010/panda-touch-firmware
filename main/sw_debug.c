@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include "bsp/esp-bsp.h"
 #include "driver/uart.h"
+#include "esp_lcd_panel_rgb.h"
 #include "esp_crc.h"
 #include "mbedtls/base64.h"
 #include "esp_log.h"
@@ -57,30 +58,20 @@ static void out(const void *d, size_t n)
     }
 }
 
-static void snap(void)
+esp_lcd_panel_handle_t sw_debug_panel;   /* von main.c gesetzt */
+
+/* Pixel (RGB565, Zeilenabstand stride Bytes) RLE + Base64 senden */
+static void send_pixels(const uint8_t *data, uint32_t w, uint32_t h, uint32_t stride, uint32_t ms)
 {
-    esp_log_level_set("*", ESP_LOG_NONE);   /* keine Logzeilen mitten in die Bilddaten */
-    if (!bsp_display_lock(portMAX_DELAY)) { esp_log_level_set("*", ESP_LOG_INFO); return; }
-    int64_t t0 = esp_timer_get_time();
-    lv_draw_buf_t *buf = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
-    int64_t t1 = esp_timer_get_time();
-    bsp_display_unlock();
-    if (!buf) {
-        send("SNAPERR\n", 8);
-        esp_log_level_set("*", ESP_LOG_INFO);
-        return;
-    }
-    uint32_t w = buf->header.w, h = buf->header.h, stride = buf->header.stride;
     char head[64];
     int hl = snprintf(head, sizeof(head), "\nSNAP %lu %lu\n", (unsigned long)w, (unsigned long)h);
     send(head, hl);
     crc = 0;
     total = 0;
     npend = 0;
-    /* RLE: Paare (Anzahl 1..65535, Pixel) als 2×uint16 little endian */
     uint16_t cur = 0, cnt = 0;
     for (uint32_t y = 0; y < h; y++) {
-        const uint16_t *row = (const uint16_t *)(buf->data + y * stride);
+        const uint16_t *row = (const uint16_t *)(data + y * stride);
         for (uint32_t x = 0; x < w; x++) {
             uint16_t p = row[x];
             if (cnt && p == cur && cnt < 65535) cnt++;
@@ -95,10 +86,39 @@ static void snap(void)
     out(pr, 4);
     out_flush(true);
     hl = snprintf(head, sizeof(head), "SNAPEND %lu %08lx %lu\n", (unsigned long)total, (unsigned long)crc,
-                  (unsigned long)((t1 - t0) / 1000));
+                  (unsigned long)ms);
     send(head, hl);
     uart_wait_tx_done(UART_NUM_0, portMAX_DELAY);
+}
+
+static void snap(void)
+{
+    esp_log_level_set("*", ESP_LOG_NONE);   /* keine Logzeilen mitten in die Bilddaten */
+    if (!bsp_display_lock(portMAX_DELAY)) { esp_log_level_set("*", ESP_LOG_INFO); return; }
+    int64_t t0 = esp_timer_get_time();
+    lv_draw_buf_t *buf = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
+    int64_t t1 = esp_timer_get_time();
+    bsp_display_unlock();
+    if (!buf) {
+        send("SNAPERR\n", 8);
+        esp_log_level_set("*", ESP_LOG_INFO);
+        return;
+    }
+    send_pixels(buf->data, buf->header.w, buf->header.h, buf->header.stride, (uint32_t)((t1 - t0) / 1000));
     lv_draw_buf_destroy(buf);
+    esp_log_level_set("*", ESP_LOG_INFO);
+}
+
+/* Inhalt des echten Bildspeichers, den der Display-Controller ausliest */
+static void fbsnap(int which)
+{
+    void *fb[2] = { NULL, NULL };
+    if (!sw_debug_panel || esp_lcd_rgb_panel_get_frame_buffer(sw_debug_panel, 2, &fb[0], &fb[1]) != ESP_OK || !fb[which & 1]) {
+        send("SNAPERR\n", 8);
+        return;
+    }
+    esp_log_level_set("*", ESP_LOG_NONE);
+    send_pixels(fb[which & 1], 800, 480, 800 * 2, 0);
     esp_log_level_set("*", ESP_LOG_INFO);
 }
 
@@ -128,6 +148,14 @@ static void debug_task(void *arg)
         line[n] = 0;
         n = 0;
         if (!strcmp(line, "snap")) snap();
+        else if (!strncmp(line, "baud ", 5)) {   /* schneller übertragen; Host stellt danach ebenfalls um */
+            send("OK\n", 3);
+            uart_wait_tx_done(UART_NUM_0, portMAX_DELAY);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            uart_set_baudrate(UART_NUM_0, atoi(line + 5));
+        }
+        else if (!strcmp(line, "fb0")) fbsnap(0);
+        else if (!strcmp(line, "fb1")) fbsnap(1);
         else if (!strncmp(line, "prof ", 5)) {   /* Messung: Teile weglassen und alles neu zeichnen */
             extern int sw_prof_skip;
             if (bsp_display_lock(portMAX_DELAY)) {

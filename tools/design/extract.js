@@ -88,6 +88,11 @@ const SCREENS = {
   messages_dev: `s=defaults();s.developer=false;route='connection';render();dispatch('reconnect');asyncToken++;closeModal();s.connected=false;s.messages=[{title:'Developer Mode ist aus',text:'Aktiviere den Developer Mode am Drucker und teste die Verbindung erneut.'}];s.status='offline';route='messages';render();`,
   connection_offline: `s=defaults();stateChange('offline');route='connection';render();`,
   toast: `s=defaults();route='home';render();toast('Licht eingeschaltet');`,
+  scroll_system: `s=defaults();route='system';render();const c=document.querySelector('.page-content');c.scrollTop=c.scrollHeight;`,
+  scroll_demo: `s=defaults();route='demo';render();const c=document.querySelector('.page-content');c.scrollTop=c.scrollHeight;`,
+  scroll_connection: `s=defaults();route='connection';render();const c=document.querySelector('.page-content');c.scrollTop=c.scrollHeight;`,
+  scroll_files: `s=defaults();route='files';render();const c=document.querySelector('.page-content');c.scrollTop=c.scrollHeight;`,
+  scroll_movement: `s=defaults();route='movement';render();const c=document.querySelector('.page-content');c.scrollTop=c.scrollHeight;`,
   press_menu: `s=defaults();route='home';render();const st=document.createElement('style');st.id='pressme';st.textContent='[data-pressme]{transform:translateY(2px);box-shadow:var(--inset)}';document.querySelector('#pressme')?.remove();document.head.appendChild(st);document.querySelector('[data-action="nav:menu"]').setAttribute('data-pressme','');`,
   sleep: `s=defaults();route='home';render();sleep();`,
 };
