@@ -66,6 +66,14 @@ int main(int argc, char **argv)
         sw_app_debug_go(argv[i]);
         lv_timer_handler();
     }
+    if (getenv("SW_PROF")) {   /* Zeitmessung: Bildschirm 30× komplett neu zeichnen */
+        extern int sw_prof_skip;
+        sw_prof_skip = atoi(getenv("SW_PROF"));
+        uint32_t t0 = tick();
+        for (int k = 0; k < 30; k++) { lv_obj_invalidate(lv_screen_active()); lv_refr_now(d); }
+        printf("%.1f ms je Bild\n", (tick() - t0) / 30.0);
+        return 0;
+    }
     /* Animationen (z. B. Toast 0,2 s) zu Ende laufen lassen */
     for (int k = 0; k < 40; k++) { lv_timer_handler(); usleep(10000); }
     lv_refr_now(d);

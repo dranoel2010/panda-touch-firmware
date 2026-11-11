@@ -13,6 +13,7 @@
 #include "esp_crc.h"
 #include "mbedtls/base64.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -59,7 +60,9 @@ static void snap(void)
 {
     esp_log_level_set("*", ESP_LOG_NONE);   /* keine Logzeilen mitten in die Bilddaten */
     if (!bsp_display_lock(portMAX_DELAY)) { esp_log_level_set("*", ESP_LOG_INFO); return; }
+    int64_t t0 = esp_timer_get_time();
     lv_draw_buf_t *buf = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
+    int64_t t1 = esp_timer_get_time();
     bsp_display_unlock();
     if (!buf) {
         send("SNAPERR\n", 8);
@@ -90,7 +93,8 @@ static void snap(void)
     uint16_t pr[2] = { cnt, cur };
     out(pr, 4);
     out_flush(true);
-    hl = snprintf(head, sizeof(head), "SNAPEND %lu %08lx\n", (unsigned long)total, (unsigned long)crc);
+    hl = snprintf(head, sizeof(head), "SNAPEND %lu %08lx %lu\n", (unsigned long)total, (unsigned long)crc,
+                  (unsigned long)((t1 - t0) / 1000));
     send(head, hl);
     uart_wait_tx_done(UART_NUM_0, portMAX_DELAY);
     lv_draw_buf_destroy(buf);
@@ -121,11 +125,14 @@ static void debug_task(void *arg)
             send("OK\n", 3);
         }
         else if (!strncmp(line, "go ", 3)) {
+            int64_t t0 = esp_timer_get_time();
             if (bsp_display_lock(portMAX_DELAY)) {
                 sw_app_debug_go(line + 3);
                 bsp_display_unlock();
             }
-            send("OK\n", 3);
+            char ok[32];
+            int l = snprintf(ok, sizeof(ok), "OK %lu\n", (unsigned long)((esp_timer_get_time() - t0) / 1000));
+            send(ok, l);
         }
     }
 }

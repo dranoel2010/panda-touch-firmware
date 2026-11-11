@@ -153,15 +153,20 @@ def mask_asset(lkey):
         return ASSETS[lkey]
     j = LAYERS[lkey]
     a = np.array(Image.open(os.path.join(OUT, 'layers', j['file'])))[:, :, 3]
+    # Mittelband (identische Spalten/Zeilen) auf höchstens BAND Pixel kürzen: verlustfrei, und breit genug,
+    # damit das Kacheln auf dem Gerät nur wenige Zeichenaufrufe braucht
+    BAND = 32
     x0, x1 = collapse(a, 1)
     y0, y1 = collapse(a, 0)
-    a2 = np.concatenate([a[:, :x0 + 1], a[:, x1 + 1:]], axis=1)
-    a2 = np.concatenate([a2[:y0 + 1, :], a2[y1 + 1:, :]], axis=0)
+    bw = min(BAND, x1 - x0 + 1)
+    bh = min(BAND, y1 - y0 + 1)
+    a2 = np.concatenate([a[:, :x0 + bw], a[:, x1 + 1:]], axis=1)
+    a2 = np.concatenate([a2[:y0 + bh, :], a2[y1 + 1:, :]], axis=0)
     cname = f'sw_m_{lkey}'
     h, w = a2.shape
     M = -j['ox']
     asset_c.append(f'static const uint8_t {cname}_d[] = {{\n{c_bytes(a2.tobytes())}\n}};\n'
-                   f'const sw_mask_t {cname} = {{ {cname}_d, {w}, {h}, {x0}, 1, {y0}, 1, {j["ox"]}, {j["oy"]}, {2 * M}, {2 * M} }};\n')
+                   f'const sw_mask_t {cname} = {{ {cname}_d, {w}, {h}, {x0}, {bw}, {y0}, {bh}, {j["ox"]}, {j["oy"]}, {2 * M}, {2 * M} }};\n')
     asset_h.append(f'extern const sw_mask_t {cname};')
     ASSETS[lkey] = cname
     return cname

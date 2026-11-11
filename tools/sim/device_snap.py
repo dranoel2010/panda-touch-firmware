@@ -29,8 +29,12 @@ s.reset_input_buffer()
 def cmd(c, wait=5):
     s.write((c + '\n').encode())
     t0, buf = time.time(), b''
-    while b'OK\n' not in buf and time.time() - t0 < wait:
+    while b'OK' not in buf or not buf.endswith(b'\n'):
         buf += s.read(64)
+        if time.time() - t0 > wait:
+            break
+    if b'OK ' in buf and c.startswith('go '):
+        print(f'{c}: Aufbau {buf.split(b"OK ")[1].split()[0].decode()} ms')
 
 
 cmd('dark 1')   # nachts: Licht bleibt aus, auch beim Aufwecken
@@ -60,7 +64,10 @@ for attempt in range(4):
         elif ln.startswith(b'D ') and w:
             lines.append(ln[2:])
         elif ln.startswith(b'SNAPEND') and w:
-            _, total, crc = ln.split()
+            parts = ln.split()
+            total, crc = parts[1], parts[2]
+            if len(parts) > 3:
+                print(f'Zeichnen des ganzen Bildschirms: {parts[3].decode()} ms')
             break
     try:
         data = b''.join(base64.b64decode(x) for x in lines)

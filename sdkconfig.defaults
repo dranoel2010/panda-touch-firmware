@@ -21,3 +21,8 @@ CONFIG_LV_USE_FLOAT=y
 CONFIG_SPIRAM_USE_MALLOC=y
 # Debug-Kanal: Bildschirm-Schnappschuss über USB (tools/sim/device_snap.py)
 CONFIG_LV_USE_SNAPSHOT=y
+# Leistung: optimiert übersetzen (Standard wäre -Og)
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+# Leistung: beide Kerne zeichnen (zwei Zeichen-Einheiten)
+CONFIG_LV_OS_FREERTOS=y
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2

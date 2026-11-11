@@ -14,6 +14,7 @@
 #include <string.h>
 
 static sw_action_cb_t s_action_cb;
+int sw_prof_skip;   /* nur zur Messung: 1 = keine Schatten, 2 = keine Flächen, 4 = keine Texte */
 
 typedef struct {
     sw_screen_t *scr;
@@ -28,14 +29,15 @@ static box_rt_t *rt_of(lv_obj_t *o);
 typedef struct piece_cache {
     const sw_mask_t *m;
     lv_image_dsc_t p[9];
+    uint8_t empty[9];   /* Stück vollständig transparent -> gar nicht zeichnen */
     struct piece_cache *next;
 } piece_cache_t;
 static piece_cache_t *s_pieces;
 
-static lv_image_dsc_t *pieces_for(const sw_mask_t *m)
+static piece_cache_t *pieces_for(const sw_mask_t *m)
 {
     for (piece_cache_t *c = s_pieces; c; c = c->next) {
-        if (c->m == m) return c->p;
+        if (c->m == m) return c;
     }
     piece_cache_t *c = lv_malloc_zeroed(sizeof(*c));
     c->m = m;
@@ -51,11 +53,16 @@ static lv_image_dsc_t *pieces_for(const sw_mask_t *m)
             d->header.stride = m->w;
             d->data = m->data + ys[r] * m->w + xs[k];
             d->data_size = (uint32_t)m->w * d->header.h;
+            bool zero = true;
+            for (uint32_t yy = 0; yy < d->header.h && zero; yy++)
+                for (uint32_t xx = 0; xx < d->header.w; xx++)
+                    if (d->data[yy * m->w + xx]) { zero = false; break; }
+            c->empty[r * 3 + k] = zero;
         }
     }
     c->next = s_pieces;
     s_pieces = c;
-    return c->p;
+    return c;
 }
 
 /* Maske in Zielgröße W×H ab (x,y) zeichnen */
@@ -63,7 +70,8 @@ static void draw_mask(lv_layer_t *layer, const sw_mask_t *m, int32_t x, int32_t 
                       lv_color_t color, lv_opa_t opa)
 {
     if (opa <= LV_OPA_MIN) return;
-    lv_image_dsc_t *p = pieces_for(m);
+    piece_cache_t *pc = pieces_for(m);
+    lv_image_dsc_t *p = pc->p;
     const int32_t L = m->l, R = m->w - m->l - m->mw, T = m->t, B = m->h - m->t - m->mh;
     int32_t MW = W - L - R, MH = H - T - B;
     if (MW < 0) MW = 0;
@@ -75,7 +83,7 @@ static void draw_mask(lv_layer_t *layer, const sw_mask_t *m, int32_t x, int32_t 
             lv_area_t a = { dx[k], dy[r], dx[k + 1] - 1, dy[r + 1] - 1 };
             if (a.x2 < a.x1 || a.y2 < a.y1) continue;
             lv_image_dsc_t *img = &p[r * 3 + k];
-            if (!img->header.w || !img->header.h) continue;
+            if (!img->header.w || !img->header.h || pc->empty[r * 3 + k]) continue;
             lv_draw_image_dsc_t d;
             lv_draw_image_dsc_init(&d);
             d.src = img;
@@ -118,6 +126,7 @@ static void grad_points(int32_t w, int32_t h, int angle, lv_point_t *s, lv_point
 
 static void draw_shadows(lv_layer_t *layer, const sw_style_t *st, const lv_area_t *c, bool inset)
 {
+    if (sw_prof_skip & 1) return;
     for (int i = st->n_shadows - 1; i >= 0; i--) {   /* CSS: erster Schatten liegt oben */
         const sw_shadow_t *sh = &st->shadows[i];
         if (sh->inset != inset) continue;
@@ -203,7 +212,7 @@ static const lv_image_dsc_t *grad_image(const sw_style_t *st, int32_t w, int32_t
 
 static void draw_body(lv_layer_t *layer, const sw_style_t *st, const lv_area_t *c)
 {
-    if (st->bg == SW_BG_NONE) return;
+    if (st->bg == SW_BG_NONE || (sw_prof_skip & 2)) return;
     if (st->bg == SW_BG_LINEAR && st->o1 == 255 && st->o2 == 255) {
         const lv_image_dsc_t *img = grad_image(st, lv_area_get_width(c), lv_area_get_height(c));
         if (img) {

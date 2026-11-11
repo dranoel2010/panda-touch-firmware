@@ -97,7 +97,8 @@ static void text_event(lv_event_t *e)
         lv_free(t);
         return;
     }
-    if (code != LV_EVENT_DRAW_MAIN || !t->text || !t->text[0]) return;
+    extern int sw_prof_skip;
+    if (code != LV_EVENT_DRAW_MAIN || !t->text || !t->text[0] || (sw_prof_skip & 4)) return;
 
     lv_layer_t *layer = lv_event_get_layer(e);
     lv_area_t c;
