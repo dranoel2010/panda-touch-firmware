@@ -1476,6 +1476,15 @@ static void tick(lv_timer_t *t)
         for (int i = 0; i < 5; i++) snprintf(s.slots[i].material, sizeof(s.slots[i].material), "%s", dr.material[i]);
         s.slot = dr.slot_aktiv;
     }
+    /* Druck fertig oder Fehler: Bildschirm aufwecken (nicht im Nachtmodus) */
+    status_t alt = ((typeof(s) *)vorher)->status;
+    if (ov_sleep && !s.night && st != alt && (st == ST_FINISHED || st == ST_ERROR) && alt != ST_LOADING) {
+        sw_screen_free(ov_sleep);
+        ov_sleep = NULL;
+        if (route != R_HOME) route = R_HOME;
+        render();
+        reset_idle();
+    }
     if (!memcmp(vorher, &s, sizeof(s)) || ov_modal) return;
     if (route == R_HOME || route == R_TEMPS || route == R_CONTROL || route == R_FILAMENT || route == R_SLOT ||
         route == R_CONNECTION || route == R_MESSAGES || route == R_FILES || route == R_HISTORY) {
