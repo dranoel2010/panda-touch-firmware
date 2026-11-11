@@ -35,6 +35,10 @@ CASES = {
     'scroll_system': ['nav:system', 'scroll:bottom'], 'scroll_demo': ['nav:demo', 'scroll:bottom'],
     'scroll_connection': ['nav:connection', 'scroll:bottom'], 'scroll_files': ['nav:files', 'scroll:bottom'],
     'scroll_movement': ['nav:movement', 'scroll:bottom'],
+    'sel_system': ['nav:system', 'toggle:sound', 'toggle:night', 'select:timeout', 'wait:3300'],
+    'sel_control': ['nav:control', 'speed:Sport', 'wait:3300'], 'sel_movement': ['nav:movement', 'step:50', 'home-axes', 'modal-confirm', 'wait:4800'],
+    'sel_demo': ['nav:demo', 'toggle:ams', 'toggle:empty', 'nav:control', 'pause', 'nav:demo', 'wait:3300'],
+    'sel_power': ['nav:power', 'toggle:autoOff'], 'sel_file': ['file:0', 'toggle:option:Flow-Kalibrierung', 'toggle:option:Bett-Nivellierung'],
 }
 
 

@@ -16,6 +16,7 @@
 #include "mbedtls/base64.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -164,6 +165,13 @@ static void debug_task(void *arg)
                 bsp_display_unlock();
             }
             send("OK\n", 3);
+        }
+        else if (!strcmp(line, "mem")) {   /* freier Speicher: intern / PSRAM / größter interner Block */
+            char b[96];
+            int l = snprintf(b, sizeof(b), "MEM %u %u %u\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+            send(b, l);
         }
         else if (!strcmp(line, "perf")) {
             char b[128];

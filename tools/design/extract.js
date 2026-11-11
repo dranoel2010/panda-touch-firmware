@@ -93,6 +93,12 @@ const SCREENS = {
   scroll_connection: `s=defaults();route='connection';render();const c=document.querySelector('.page-content');c.scrollTop=c.scrollHeight;`,
   scroll_files: `s=defaults();route='files';render();const c=document.querySelector('.page-content');c.scrollTop=c.scrollHeight;`,
   scroll_movement: `s=defaults();route='movement';render();const c=document.querySelector('.page-content');c.scrollTop=c.scrollHeight;`,
+  sel_system: `s=defaults();s.sound=false;s.night=true;s.timeout='15 Minuten';route='system';render();`,
+  sel_control: `s=defaults();s.speed='Sport';route='control';render();`,
+  sel_movement: `s=defaults();s.step=50;s.homed=true;s.x=0;s.y=0;s.z=0;route='movement';render();`,
+  sel_demo: `s=defaults();s.status='paused';s.ams=false;s.empty=true;route='demo';render();`,
+  sel_power: `s=defaults();s.autoOff=true;route='power';render();`,
+  sel_file: `s=defaults();s.printOptions['Flow-Kalibrierung']=true;s.printOptions['Bett-Nivellierung']=false;fileIndex=0;route='file';render();`,
   press_menu: `s=defaults();route='home';render();const st=document.createElement('style');st.id='pressme';st.textContent='[data-pressme]{transform:translateY(2px);box-shadow:var(--inset)}';document.querySelector('#pressme')?.remove();document.head.appendChild(st);document.querySelector('[data-action="nav:menu"]').setAttribute('data-pressme','');`,
   sleep: `s=defaults();route='home';render();sleep();`,
 };

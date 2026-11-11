@@ -31,8 +31,16 @@ static void nvs_starten(void)
 
 esp_err_t bsp_display_indev_init(lv_display_t *disp);   /* bsp_touch.c */
 
-/* Display wie im BSP, aber LVGL zeichnet in Streifen im schnellen internen RAM statt direkt in den
- * Bildspeicher im PSRAM (den der Display-Controller ständig ausliest). Das ist um ein Vielfaches schneller. */
+/* Darstellungsart:
+ *  0 = Streifen: LVGL zeichnet in Streifen im internen RAM und kopiert sie in den sichtbaren Bildspeicher
+ *      (neuer Bildschirm baut sich sichtbar von oben nach unten auf)
+ *  1 = direkt mit Doppelpuffer: gezeichnet wird im unsichtbaren Bildspeicher, dann sauber umgeschaltet
+ *      (kein Reißen/Aufbauen sichtbar) */
+#ifndef ANZEIGE_DIREKT
+#define ANZEIGE_DIREKT 1
+#endif
+
+/* Display wie im BSP, Darstellungsart siehe oben. */
 static lv_display_t *anzeige_starten(void)
 {
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
@@ -41,8 +49,8 @@ static lv_display_t *anzeige_starten(void)
     if (bsp_display_new(NULL, &panel, NULL) != ESP_OK) return NULL;
     const lvgl_port_display_cfg_t disp_cfg = {
         .panel_handle = panel,
-        .buffer_size = BSP_LCD_H_RES * 60,
-        .double_buffer = true,
+        .buffer_size = ANZEIGE_DIREKT ? BSP_LCD_H_RES * BSP_LCD_V_RES : BSP_LCD_H_RES * 60,
+        .double_buffer = !ANZEIGE_DIREKT,
         .hres = BSP_LCD_H_RES,
         .vres = BSP_LCD_V_RES,
         .color_format = LV_COLOR_FORMAT_RGB565,
@@ -51,11 +59,11 @@ static lv_display_t *anzeige_starten(void)
             .buff_spiram = false,
             .swap_bytes = (BSP_LCD_BIGENDIAN ? true : false),
             .full_refresh = false,
-            .direct_mode = false,
+            .direct_mode = ANZEIGE_DIREKT,
         },
     };
     const lvgl_port_display_rgb_cfg_t rgb_cfg = {
-        .flags = { .bb_mode = true, .avoid_tearing = false },
+        .flags = { .bb_mode = true, .avoid_tearing = ANZEIGE_DIREKT },
     };
     extern esp_lcd_panel_handle_t sw_debug_panel;
     sw_debug_panel = panel;

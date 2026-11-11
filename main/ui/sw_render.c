@@ -7,6 +7,12 @@
  */
 #include "sw_render.h"
 #include "sw_text.h"
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#define GRAD_ALLOC(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM)   /* internes RAM für WLAN freihalten */
+#else
+#define GRAD_ALLOC(n) lv_malloc(n)
+#endif
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -228,12 +234,24 @@ static const lv_image_dsc_t *grad_image(const sw_style_t *st, int32_t w, int32_t
         grad_img_t *o = *old;
         *old = o->next;
         s_grad_bytes -= (uint32_t)o->w * o->h * 2;
+#ifdef ESP_PLATFORM
+        heap_caps_free((void *)o->img.data);
+#else
         lv_free((void *)o->img.data);
+#endif
         lv_free(o);
     }
-    uint16_t *px = lv_malloc(bytes);
+    uint16_t *px = GRAD_ALLOC(bytes);
     grad_img_t *g = lv_malloc_zeroed(sizeof(*g));
-    if (!px || !g) { lv_free(px); lv_free(g); return NULL; }
+    if (!px || !g) {
+#ifdef ESP_PLATFORM
+        heap_caps_free(px);
+#else
+        lv_free(px);
+#endif
+        lv_free(g);
+        return NULL;
+    }
     /* Ganzzahlig (Festkomma 16.16): double ist auf dem ESP32-S3 nur in Software vorhanden und sehr langsam.
      * t(x,y) ist linear: t = t0 + x*tx + y*ty, Farbe = c1 + (c2-c1)*t, dann Bayer-Dithering auf RGB565. */
     float a = st->angle * (float)M_PI / 180.0f, dxf = sinf(a), dyf = -cosf(a);
