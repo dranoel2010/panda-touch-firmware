@@ -71,6 +71,14 @@ int main(int argc, char **argv)
             for (int k = 0; k < ms / 10; k++) { lv_timer_handler(); usleep(10000); }
             continue;
         }
+#ifdef SW_LIVE_SIM
+        if (!strncmp(argv[i], "dr:", 3)) {   /* Schein-Drucker umstellen, dann die Oberfläche nachziehen lassen */
+            extern void drucker_sim_setzen(const char *a);
+            drucker_sim_setzen(argv[i]);
+            for (int k = 0; k < 60; k++) { lv_timer_handler(); usleep(10000); }
+            continue;
+        }
+#endif
         sw_app_debug_go(argv[i]);
         lv_timer_handler();
     }

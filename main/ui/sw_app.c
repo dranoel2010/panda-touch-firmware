@@ -22,7 +22,7 @@
 
 /* LIVE: echte Druckerdaten (Gerät). Der Simulator (tools/sim) läuft weiter mit den Demo-Daten des
  * Prototyps, damit die Design-Vergleiche gleich bleiben. */
-#if defined(ESP_PLATFORM) && !defined(SW_DEMO)
+#if (defined(ESP_PLATFORM) && !defined(SW_DEMO)) || defined(SW_LIVE_SIM)   /* SW_LIVE_SIM: Simulator mit Schein-Drucker */
 #define LIVE 1
 #include "drucker.h"
 static drucker_t dr;
@@ -43,7 +43,7 @@ static uint32_t dl_stand, dl_geladen_ms;
 typedef enum { ST_PRINTING, ST_PAUSED, ST_HEATING, ST_LEVELLING, ST_FINISHED, ST_IDLE, ST_OFFLINE, ST_ERROR, ST_LOADING } status_t;
 static const char *const STATUS_NAMES[] = { "printing", "paused", "heating", "levelling", "finished", "idle", "offline", "error", "loading" };
 
-typedef struct { char name[32]; char result[16]; char duration[24]; } hist_t;
+typedef struct { char name[48]; char result[16]; char duration[24]; } hist_t;
 typedef struct { const char *name, *time, *material, *weight; int minutes; } file_t;
 static const file_t FILES[3] = {
     { "Organizer.3mf", "3 h 54 min", "PLA", "86 g", 234 },
@@ -55,7 +55,7 @@ static const char *const OPT_NAMES[4] = { "Bett-Nivellierung", "Flow-Kalibrierun
 static struct {
     status_t status;
     int progress, remaining;
-    char file[32];
+    char file[48];
     bool light;
     int nozzle, bed, nozzle_now, bed_now;
     char speed[12];
@@ -486,7 +486,9 @@ static void patch_home(void)
 {
     bool done = s.status == ST_FINISHED, idle = s.status == ST_IDLE;
     char buf[32];
-    set_key_textf("text:rail/strong", "%d %%", s.progress);
+    /* „Druck fertig“ hat Zahl und „%“ als getrennte Texte */
+    if (key("text:rail/strong#2") >= 0) set_key_textf("text:rail/strong", "%d", s.progress);
+    else set_key_textf("text:rail/strong", "%d %%", s.progress);
     int fill = key("box:progress-fill");
     if (fill >= 0) {
         int h = (int)lround(270.0 * s.progress / 100.0);
@@ -504,7 +506,7 @@ static void patch_home(void)
         set_key_text("text:finish/strong", buf);
     }
     if (!idle) {
-        set_key_text("text:job-title", s.file);
+        set_key_text_fit("text:job-title", s.file, 330);   /* nicht in die Licht-Kachel laufen */
 #if LIVE
         if (dr.schichten > 0) set_key_textf("text:job-detail", "Schicht %d / %d", dr.schicht, dr.schichten);
         else set_key_text("text:job-detail", "");
@@ -631,7 +633,8 @@ static void patch(void)
             datei_info(f, info, sizeof(info));
             set_key_text_fit("text:row/div/h3", f->name, 460);
             char zeile[80];
-            snprintf(zeile, sizeof(zeile), "%s · %s", zeit, info);
+            if (f->minuten < 0) snprintf(zeile, sizeof(zeile), "%s", f->n_fil || f->gramm >= 0 ? info : "Keine Angaben zu Zeit und Material");
+            else snprintf(zeile, sizeof(zeile), "%s · %s", zeit, info);
             set_key_text_fit("text:label", zeile, 460);
         }
         set_key_text("text:notice", "Druckplatte vorher leeren – der Druck startet sofort am Drucker.");
@@ -664,7 +667,7 @@ static void patch(void)
         for (int i = 0; i < 2 && i < s.n_history; i++) {
             char k[40];
             snprintf(k, sizeof(k), i ? "text:list-item/div/strong#%d" : "text:list-item/div/strong", i + 1);
-            set_key_text(k, s.history[i].name);
+            set_key_text_fit(k, s.history[i].name, 440);
             snprintf(k, sizeof(k), i ? "text:list-item/div/small#%d" : "text:list-item/div/small", i + 1);
             snprintf(buf, sizeof(buf), "%s · %s", s.history[i].result, s.history[i].duration);
             set_key_text(k, buf);
@@ -1057,7 +1060,12 @@ static void wifi_done(void)
 }
 
 #if LIVE
-static void restart_done(void) { esp_restart(); }
+static void restart_done(void)
+{
+#ifdef ESP_PLATFORM
+    esp_restart();
+#endif
+}
 #else
 static void restart_done(void) { go(R_HOME); }
 #endif
@@ -1251,6 +1259,10 @@ static void dispatch(const char *action)
         int delta = atoi(strrchr(action, ':') + 1);
         int *v = bed ? &s.bed : &s.nozzle;
         *v += delta;
+#if LIVE
+        /* Heizung aus: erster Schritt nach oben springt auf einen sinnvollen Startwert statt 5 °C */
+        if (delta > 0 && *v - delta < (bed ? 35 : 170)) *v = bed ? 35 : 170;
+#endif
         if (*v < 0) *v = 0;
         if (*v > (bed ? 110 : 300)) *v = bed ? 110 : 300;
 #if LIVE
@@ -1450,9 +1462,9 @@ static void tick(lv_timer_t *t)
     s.developer = !dr.abgelehnt;
     s.message = msg;
     if (verbunden && dr.daten) {
-        s.progress = dr.prozent;
-        s.remaining = dr.rest_min;
-        snprintf(s.file, sizeof(s.file), "%.31s", dr.datei);
+        s.progress = st == ST_FINISHED ? 100 : st == ST_IDLE ? 0 : dr.prozent;
+        s.remaining = st == ST_FINISHED || st == ST_IDLE ? 0 : dr.rest_min;
+        snprintf(s.file, sizeof(s.file), "%.47s", dr.datei);
         s.nozzle_now = dr.duese;
         s.nozzle = dr.duese_soll;
         s.bed_now = dr.bett;

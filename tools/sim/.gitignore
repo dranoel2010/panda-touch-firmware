@@ -2,3 +2,4 @@ build/
 sim
 *.ppm
 *.png
+sim_live

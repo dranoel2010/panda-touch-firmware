@@ -23,6 +23,23 @@ $(BUILD)/sim_main.o: sim_main.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Simulator mit Schein-Drucker (Live-Oberfläche wie auf dem Gerät): make sim_live && ./sim_live out.ppm dr:zustand=RUNNING …
+LIVE_OBJ := $(patsubst $(REPO)/main/%.c,$(BUILD)/live/%.o,$(UI_SRC))
+sim_live: $(LV_OBJ) $(LIVE_OBJ) $(BUILD)/live/sim_main.o $(BUILD)/live/drucker_sim.o
+	$(CC) -o $@ $^ -lm
+
+$(BUILD)/live/%.o: $(REPO)/main/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DSW_LIVE_SIM -c $< -o $@
+
+$(BUILD)/live/sim_main.o: sim_main.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DSW_LIVE_SIM -c $< -o $@
+
+$(BUILD)/live/drucker_sim.o: drucker_sim.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DSW_LIVE_SIM -c $< -o $@
+
 clean:
-	rm -rf $(BUILD) sim
+	rm -rf $(BUILD) sim sim_live
 -include $(shell find build -name "*.d" 2>/dev/null)
