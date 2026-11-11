@@ -295,7 +295,8 @@ void sw_debug_start(void)
         lv_display_add_event_cb(d, refr_cb, LV_EVENT_FLUSH_WAIT_FINISH, NULL);
         bsp_display_unlock();
     }
-    if (xTaskCreate(debug_task, "debug", 6144, NULL, 2, NULL) != pdPASS) ESP_LOGE("debug", "Task nicht startbar");
+    /* Stack im PSRAM: der interne RAM ist mit WLAN knapp (der Task schreibt nie in den Flash) */
+    if (xTaskCreatePinnedToCoreWithCaps(debug_task, "debug", 6144, NULL, 2, NULL, tskNO_AFFINITY, MALLOC_CAP_SPIRAM) != pdPASS) ESP_LOGE("debug", "Task nicht startbar");
     ESP_LOGI("debug", "intern frei %u (größter Block %u), PSRAM frei %u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));

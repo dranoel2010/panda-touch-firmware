@@ -56,3 +56,6 @@ CONFIG_MQTT_TASK_STACK_ON_EXTERNAL_MEMORY=y
 CONFIG_MQTT_BUFFERS_ON_EXTERNAL_MEMORY=y
 # AES in Software: die Hardware-AES braucht internen DMA-Speicher, der für große Druckerberichte fehlt
 CONFIG_MBEDTLS_HARDWARE_AES=n
+# MQTT auf Kern 0 (die Oberfläche läuft auf Kern 1)
+CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED=y
+CONFIG_MQTT_USE_CORE_0=y

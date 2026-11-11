@@ -95,6 +95,7 @@ static esp_err_t panel_neu(esp_lcd_panel_handle_t *ret)
 static lv_display_t *anzeige_starten(void)
 {
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    port_cfg.task_affinity = 1;   /* Oberfläche auf Kern 1, WLAN/MQTT/TLS laufen auf Kern 0 */
     if (lvgl_port_init(&port_cfg) != ESP_OK) return NULL;
     esp_lcd_panel_handle_t panel = NULL;
     if (panel_neu(&panel) != ESP_OK) return NULL;

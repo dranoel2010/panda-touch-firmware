@@ -31,6 +31,8 @@ static uint32_t dr_start_ms;
 static bool fertig_quittiert;   /* „Fertig“ bestätigt, bis der Drucker einen neuen Zustand meldet */
 static uint32_t fehler_ausgeblendet;
 static char dr_zustand_vorher[12];
+static dateiliste_t dl;           /* Druckdateien von der SD-Karte des Druckers */
+static uint32_t dl_stand, dl_geladen_ms;
 #else
 #define LIVE 0
 #endif
@@ -243,6 +245,25 @@ static void set_key_textf(const char *k, const char *fmt, ...)
     set_key_text(k, buf);
 }
 
+/* Text setzen und bei Bedarf mit „…“ kürzen, damit er nicht in den Nachbarn läuft */
+static void set_key_text_fit(const char *k, const char *txt, int max_px)
+{
+    int i = key(k);
+    if (i < 0) return;
+    const sw_node_t *n = &scr->def->nodes[i];
+    if (!n->font || sw_text_width_q4(n->font, txt, n->ls_q4) <= max_px * 16) { sw_set_text(scr, i, txt); return; }
+    char buf[128];
+    size_t l = strlen(txt);
+    if (l > sizeof(buf) - 4) l = sizeof(buf) - 4;
+    while (l > 0) {
+        do l--; while (l > 0 && ((unsigned char)txt[l] & 0xC0) == 0x80);   /* UTF-8-Zeichengrenze */
+        memcpy(buf, txt, l);
+        strcpy(buf + l, "…");
+        if (sw_text_width_q4(n->font, buf, n->ls_q4) <= max_px * 16) break;
+    }
+    sw_set_text(scr, i, buf);
+}
+
 static void select_action(const char *action, bool sel)
 {
     int i = key(action);
@@ -408,13 +429,22 @@ static const sw_screen_def_t *pick_def(void)
         return (wizard_load ? load : unload)[wizard_step & 3];
     }
     case R_FILES: {
+#if LIVE
+        if (file_source == 1) return &sw_scr_files_usb_empty;   /* USB-Stick: Druck nur von der SD-Karte des Druckers */
+        if (!s.connected) return &sw_scr_files_offline;
+        return dl.anzahl > 0 ? &sw_scr_files : &sw_scr_files_empty;
+#endif
         bool available = file_source == 0 || s.usb;
         if (!s.connected && file_source == 0) return &sw_scr_files_offline;
         if (!available) return &sw_scr_files_usb_empty;
         if (s.empty) return &sw_scr_files_empty;
         return file_source == 0 ? &sw_scr_files : &sw_scr_files_usb;
     }
+#if LIVE
+    case R_FILE: return &sw_scr_file;
+#else
     case R_FILE: return file_index == 1 ? &sw_scr_file_1 : file_index == 2 ? &sw_scr_file_2 : &sw_scr_file;
+#endif
     case R_MOVEMENT: return &sw_scr_movement;
     case R_FANS: return &sw_scr_fans;
     case R_HISTORY: return s.n_history ? &sw_scr_history : &sw_scr_history_empty;
@@ -427,6 +457,29 @@ static const sw_screen_def_t *pick_def(void)
     }
     return &sw_scr_home;
 }
+
+#if LIVE
+static void datei_zeit(const druckdatei_t *f, char *buf, size_t n)
+{
+    if (f->minuten < 0) snprintf(buf, n, "–");
+    else if (f->minuten >= 60) snprintf(buf, n, "%d h %d min", f->minuten / 60, f->minuten % 60);
+    else snprintf(buf, n, "%d min", f->minuten);
+}
+
+/* „PLA · 86 g“ (bei mehreren Materialien „PLA + PETG · 86 g“) */
+static void datei_info(const druckdatei_t *f, char *buf, size_t n)
+{
+    char mat[24] = "";
+    for (int i = 0; i < f->n_fil; i++) {
+        if (!f->fil_typ[i][0] || strstr(mat, f->fil_typ[i])) continue;
+        if (strlen(mat) + strlen(f->fil_typ[i]) + 4 >= sizeof(mat)) break;
+        if (mat[0]) strcat(mat, " + ");
+        strcat(mat, f->fil_typ[i]);
+    }
+    if (f->gramm >= 0) snprintf(buf, n, "%s · %d g", mat[0] ? mat : "3MF", f->gramm);
+    else snprintf(buf, n, "%s", mat[0] ? mat : "3MF");
+}
+#endif
 
 static void patch_home(void)
 {
@@ -460,6 +513,13 @@ static void patch_home(void)
     }
     set_key_textf("text:home-temps/button", "Düse %d °C", s.nozzle_now);
     set_key_textf("text:home-temps/button#2", "Bett %d °C", s.bed_now);
+#if LIVE
+    if (!dr.daten) {   /* seit dem Start noch nichts vom Drucker gehört: keine erfundenen Nullen zeigen */
+        set_key_text("text:home-temps/button", "Düse – °C");
+        set_key_text("text:home-temps/button#2", "Bett – °C");
+        set_key_text("text:remaining/strong", "–");
+    }
+#endif
     set_key_textf("text:connection", "P1S · %s", s.connected ? "Verbunden" : "Offline");
     int dot = key("box:light-dot");
     if (dot >= 0 && !s.light) {
@@ -488,6 +548,9 @@ static void patch(void)
         set_key_textf("text:big-number#2", "%d°", s.bed);
         set_key_textf("text:muted", "· Ist %d °C", s.nozzle_now);
         set_key_textf("text:muted#2", "· Ist %d °C", s.bed_now);
+#if LIVE
+        if (!dr.daten) { set_key_text("text:muted", "· Ist – °C"); set_key_text("text:muted#2", "· Ist – °C"); }
+#endif
 #if LIVE
         if (dr.ams && dr.feuchte >= 0) set_key_textf("text:notice", "AMS-Luftfeuchte %d %% · Kein Raumsensor angeschlossen", dr.feuchte);
         else set_key_text("text:notice", "Kein Raumsensor angeschlossen");
@@ -532,8 +595,46 @@ static void patch(void)
     case R_FILES:
         select_action("source:SD-Karte", file_source == 0);
         select_action("source:USB-Stick", file_source == 1);
+#if LIVE
+        if (scr->def == &sw_scr_files_empty) {
+            set_key_text("text:empty/h3", dl.status <= 1 ? "Dateien werden geladen …" : dl.status == 3 ? "SD-Karte nicht lesbar" : "Keine Dateien");
+            set_key_text("text:empty/p", dl.status <= 1 ? "Die SD-Karte des Druckers wird gelesen."
+                                         : dl.status == 3 ? "Prüfe die SD-Karte im Drucker." : "Hier erscheinen druckfertige 3MF-Dateien.");
+            set_action_text("nav:demo", "Aktualisieren");
+        } else if (scr->def == &sw_scr_files) {
+            for (int i = 0; i < 3; i++) {
+                char k[40], a[12];
+                snprintf(a, sizeof(a), "file:%d", i);
+                if (key(a) >= 0) sw_set_hidden(scr, key(a), i >= dl.anzahl);
+                if (i >= dl.anzahl) continue;
+                const druckdatei_t *f = &dl.d[i];
+                char zeit[24], info[40];
+                datei_zeit(f, zeit, sizeof(zeit));
+                datei_info(f, info, sizeof(info));
+                snprintf(k, sizeof(k), i ? "text:list-item/div/strong#%d" : "text:list-item/div/strong", i + 1);
+                set_key_text_fit(k, f->name, 420);
+                snprintf(k, sizeof(k), i ? "text:list-item/div/small#%d" : "text:list-item/div/small", i + 1);
+                set_key_text_fit(k, info, 420);
+                snprintf(k, sizeof(k), i ? "text:end#%d" : "text:end", i + 1);
+                set_key_text(k, zeit);
+            }
+        }
+#endif
         break;
     case R_FILE:
+#if LIVE
+        if (file_index < dl.anzahl) {
+            const druckdatei_t *f = &dl.d[file_index];
+            char zeit[24], info[40];
+            datei_zeit(f, zeit, sizeof(zeit));
+            datei_info(f, info, sizeof(info));
+            set_key_text_fit("text:row/div/h3", f->name, 460);
+            char zeile[80];
+            snprintf(zeile, sizeof(zeile), "%s · %s", zeit, info);
+            set_key_text_fit("text:label", zeile, 460);
+        }
+        set_key_text("text:notice", "Druckplatte vorher leeren – der Druck startet sofort am Drucker.");
+#endif
         for (int i = 0; i < 4; i++) {
             char a[48];
             snprintf(a, sizeof(a), "toggle:option:%s", OPT_NAMES[i]);
@@ -558,6 +659,7 @@ static void patch(void)
         }
         break;
     case R_HISTORY:
+        if (key("history:1") >= 0) sw_set_hidden(scr, key("history:1"), s.n_history < 2);
         for (int i = 0; i < 2 && i < s.n_history; i++) {
             char k[40];
             snprintf(k, sizeof(k), i ? "text:list-item/div/strong#%d" : "text:list-item/div/strong", i + 1);
@@ -803,6 +905,14 @@ static void replace_print(void)
 static void start_print(void)
 {
     if (!need_connection()) return;
+#if LIVE
+    if (active()) { toast("Es läuft bereits ein Druck"); return; }
+    if (file_index >= dl.anzahl) return;
+    if (!drucker_drucken(&dl.d[file_index], s.opt[0], s.opt[1], s.opt[2], s.opt[3])) { toast("Drucker nicht erreichbar"); return; }
+    go(R_HOME);
+    toast("Druck wird gestartet …");
+    return;
+#endif
     if (active()) modal(&sw_scr_modal_replace, replace_print);
     else perform_print();
 }
@@ -1011,6 +1121,12 @@ static int temperatur_fuer(const char *mat) { return !strcmp(mat, "PETG") ? 250 
 /* Aktionen, die im Live-Betrieb anders laufen als im Prototyp. true = erledigt */
 static bool live_dispatch(const char *a)
 {
+    if (!strcmp(a, "nav:demo") && route == R_FILES) {   /* Knopf „Aktualisieren“ auf der leeren Dateiliste */
+        dateien_laden();
+        dl.status = 1;
+        render();
+        return true;
+    }
     if (!strcmp(a, "nav:demo") || !strncmp(a, "state:", 6)) { toast("Demo-Modus ist ausgeschaltet"); return true; }
     if (!strcmp(a, "nav:setup") || !strcmp(a, "setup-connect") || !strcmp(a, "select:wifi")) {
         toast("WLAN ist in der Firmware hinterlegt (main/secrets.h)");
@@ -1019,7 +1135,20 @@ static bool live_dispatch(const char *a)
     if (!strcmp(a, "power-switch") || !strcmp(a, "toggle:autoOff")) { toast("Keine schaltbare Steckdose eingerichtet"); return true; }
     if (!strcmp(a, "toggle:developer")) { render(); return true; }
     if (!strcmp(a, "dry")) { toast("Das AMS des P1S kann nicht trocknen"); return true; }
-    if (!strncmp(a, "history:", 8)) return true;
+    if (!strncmp(a, "history:", 8)) {   /* „Erneut drucken“: Datei in der Liste suchen */
+        int h = atoi(a + 8);
+        for (int i = 0; h < s.n_history && i < dl.anzahl; i++)
+            if (!strcmp(dl.d[i].name, s.history[h].name)) { file_index = i; go(R_FILE); return true; }
+        toast("Datei ist nicht unter den neuesten auf der SD-Karte");
+        return true;
+    }
+    if (!strncmp(a, "file:", 5)) {
+        int i = atoi(a + 5);
+        if (i >= dl.anzahl) return true;
+        file_index = i;
+        go(R_FILE);
+        return true;
+    }
     if (!strcmp(a, "ack-finish")) { fertig_quittiert = true; return false; }
     if (!strncmp(a, "resolve:", 8) || !strncmp(a, "dismiss:", 8)) {
         if (s.message == 1) fehler_ausgeblendet = dr.fehler;
@@ -1271,6 +1400,15 @@ static void tick(lv_timer_t *t)
 {
     (void)t;
     drucker_holen(&dr, &dr_stand);
+    if (route == R_FILES && file_source == 0 && dr.verbunden && dl.status != 1 &&
+        (!dl_geladen_ms || lv_tick_elaps(dl_geladen_ms) > 120000)) {
+        dl_geladen_ms = lv_tick_get();
+        dateien_laden();
+    }
+    if (dateien_holen(&dl, &dl_stand) && !ov_modal && (route == R_FILES || route == R_FILE || route == R_HISTORY)) {
+        if (route == R_FILE && file_index >= dl.anzahl) go(R_FILES);
+        else render();
+    }
     bool verbunden;
     if (strcmp(dr.zustand, dr_zustand_vorher)) {
         /* Druck beendet oder abgebrochen -> Verlauf */
