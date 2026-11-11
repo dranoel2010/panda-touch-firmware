@@ -30,6 +30,8 @@ typedef struct piece_cache {
     const sw_mask_t *m;
     lv_image_dsc_t p[9];
     uint8_t empty[9];   /* Stück vollständig transparent -> gar nicht zeichnen */
+    lv_area_t trim[9];  /* nicht-transparenter Bereich innerhalb des Stücks */
+    lv_image_dsc_t sub[9];
     struct piece_cache *next;
 } piece_cache_t;
 static piece_cache_t *s_pieces;
@@ -53,11 +55,23 @@ static piece_cache_t *pieces_for(const sw_mask_t *m)
             d->header.stride = m->w;
             d->data = m->data + ys[r] * m->w + xs[k];
             d->data_size = (uint32_t)m->w * d->header.h;
-            bool zero = true;
-            for (uint32_t yy = 0; yy < d->header.h && zero; yy++)
-                for (uint32_t xx = 0; xx < d->header.w; xx++)
-                    if (d->data[yy * m->w + xx]) { zero = false; break; }
-            c->empty[r * 3 + k] = zero;
+            /* Begrenzungsrahmen der nicht-transparenten Pixel; leere Ränder werden nicht gezeichnet.
+             * Gekachelte Richtungen (mittlere Spalte/Zeile) bleiben vollständig. */
+            int32_t bx0 = d->header.w, by0 = d->header.h, bx1 = -1, by1 = -1;
+            for (int32_t yy = 0; yy < (int32_t)d->header.h; yy++)
+                for (int32_t xx = 0; xx < (int32_t)d->header.w; xx++)
+                    if (d->data[yy * m->w + xx]) {
+                        if (xx < bx0) bx0 = xx;
+                        if (xx > bx1) bx1 = xx;
+                        if (yy < by0) by0 = yy;
+                        if (yy > by1) by1 = yy;
+                    }
+            c->empty[r * 3 + k] = bx1 < 0;
+            if (bx1 >= 0) {
+                if (k == 1) { bx0 = 0; bx1 = d->header.w - 1; }
+                if (r == 1) { by0 = 0; by1 = d->header.h - 1; }
+                c->trim[r * 3 + k] = (lv_area_t){ bx0, by0, bx1, by1 };
+            }
         }
     }
     c->next = s_pieces;
@@ -84,6 +98,25 @@ static void draw_mask(lv_layer_t *layer, const sw_mask_t *m, int32_t x, int32_t 
             if (a.x2 < a.x1 || a.y2 < a.y1) continue;
             lv_image_dsc_t *img = &p[r * 3 + k];
             if (!img->header.w || !img->header.h || pc->empty[r * 3 + k]) continue;
+            /* auf den nicht-transparenten Bereich zuschneiden */
+            const lv_area_t *tr = &pc->trim[r * 3 + k];
+            if (k != 1) {
+                a.x1 += tr->x1;
+                a.x2 = a.x1 + (tr->x2 - tr->x1);
+            }
+            if (r != 1) {
+                a.y1 += tr->y1;
+                a.y2 = a.y1 + (tr->y2 - tr->y1);
+            }
+            lv_image_dsc_t *sub = &pc->sub[r * 3 + k];
+            if (!sub->data) {
+                *sub = *img;
+                sub->data = img->data + tr->y1 * img->header.stride + tr->x1;
+                sub->header.w = tr->x2 - tr->x1 + 1;
+                sub->header.h = tr->y2 - tr->y1 + 1;
+                sub->data_size = img->header.stride * sub->header.h;
+            }
+            img = sub;
             lv_draw_image_dsc_t d;
             lv_draw_image_dsc_init(&d);
             d.src = img;
@@ -175,20 +208,26 @@ static const lv_image_dsc_t *grad_image(const sw_style_t *st, int32_t w, int32_t
     uint16_t *px = lv_malloc(bytes);
     grad_img_t *g = lv_malloc_zeroed(sizeof(*g));
     if (!px || !g) { lv_free(px); lv_free(g); return NULL; }
-    double a = st->angle * M_PI / 180.0, dx = sin(a), dy = -cos(a);
-    double len = fabs(w * sin(a)) + fabs(h * cos(a));
-    double r1 = st->c1.red, g1 = st->c1.green, b1 = st->c1.blue;
-    double r2 = st->c2.red, g2 = st->c2.green, b2 = st->c2.blue;
+    /* Ganzzahlig (Festkomma 16.16): double ist auf dem ESP32-S3 nur in Software vorhanden und sehr langsam.
+     * t(x,y) ist linear: t = t0 + x*tx + y*ty, Farbe = c1 + (c2-c1)*t, dann Bayer-Dithering auf RGB565. */
+    float a = st->angle * (float)M_PI / 180.0f, dxf = sinf(a), dyf = -cosf(a);
+    float len = fabsf(w * sinf(a)) + fabsf(h * cosf(a));
+    int32_t tx = (int32_t)(dxf / len * 65536.0f), ty = (int32_t)(dyf / len * 65536.0f);
+    int32_t t00 = (int32_t)(((0.5f - w / 2.0f) * dxf + (0.5f - h / 2.0f) * dyf) / len * 65536.0f) + 32768;
+    /* Kanäle in Displayeinheiten ×16 (für das 4×4-Dithering): r,b in 0..31*16, g in 0..63*16 */
+    int32_t r1 = st->c1.red * 31 * 16 / 255, g1 = st->c1.green * 63 * 16 / 255, b1 = st->c1.blue * 31 * 16 / 255;
+    int32_t r2 = st->c2.red * 31 * 16 / 255, g2 = st->c2.green * 63 * 16 / 255, b2 = st->c2.blue * 31 * 16 / 255;
     for (int32_t y = 0; y < h; y++) {
-        for (int32_t x = 0; x < w; x++) {
-            double t = ((x + 0.5 - w / 2.0) * dx + (y + 0.5 - h / 2.0) * dy) / len + 0.5;
-            if (t < 0) t = 0;
-            if (t > 1) t = 1;
-            double d = (BAYER4[y & 3][x & 3] + 0.5) / 16.0;
-            int r = (int)((r1 + (r2 - r1) * t) * 31.0 / 255.0 + d);
-            int gg = (int)((g1 + (g2 - g1) * t) * 63.0 / 255.0 + d);
-            int b = (int)((b1 + (b2 - b1) * t) * 31.0 / 255.0 + d);
-            px[y * w + x] = (uint16_t)((LV_MIN(r, 31) << 11) | (LV_MIN(gg, 63) << 5) | LV_MIN(b, 31));
+        int32_t t = t00 + y * ty;
+        const uint8_t *bay = BAYER4[y & 3];
+        uint16_t *row = px + y * w;
+        for (int32_t x = 0; x < w; x++, t += tx) {
+            int32_t tc = t < 0 ? 0 : (t > 65536 ? 65536 : t);
+            int32_t d = bay[x & 3];
+            int32_t r = (r1 + (int32_t)(((int64_t)(r2 - r1) * tc) >> 16) + d) >> 4;
+            int32_t gg = (g1 + (int32_t)(((int64_t)(g2 - g1) * tc) >> 16) + d) >> 4;
+            int32_t b = (b1 + (int32_t)(((int64_t)(b2 - b1) * tc) >> 16) + d) >> 4;
+            row[x] = (uint16_t)((LV_MIN(r, 31) << 11) | (LV_MIN(gg, 63) << 5) | LV_MIN(b, 31));
         }
     }
     g->c1 = st->c1;

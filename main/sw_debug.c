@@ -8,6 +8,7 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "bsp/esp-bsp.h"
 #include "driver/uart.h"
 #include "esp_crc.h"
@@ -101,6 +102,16 @@ static void snap(void)
     esp_log_level_set("*", ESP_LOG_INFO);
 }
 
+/* Dauer der letzten echten Display-Aktualisierungen */
+static int64_t s_refr_t0;
+static uint32_t s_refr_ms[8];
+static int s_refr_n;
+static void refr_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_REFR_START) s_refr_t0 = esp_timer_get_time();
+    else s_refr_ms[s_refr_n++ & 7] = (uint32_t)((esp_timer_get_time() - s_refr_t0) / 1000);
+}
+
 static void debug_task(void *arg)
 {
     (void)arg;
@@ -117,6 +128,22 @@ static void debug_task(void *arg)
         line[n] = 0;
         n = 0;
         if (!strcmp(line, "snap")) snap();
+        else if (!strncmp(line, "prof ", 5)) {   /* Messung: Teile weglassen und alles neu zeichnen */
+            extern int sw_prof_skip;
+            if (bsp_display_lock(portMAX_DELAY)) {
+                sw_prof_skip = atoi(line + 5);
+                lv_obj_invalidate(lv_screen_active());
+                bsp_display_unlock();
+            }
+            send("OK\n", 3);
+        }
+        else if (!strcmp(line, "perf")) {
+            char b[128];
+            int l = snprintf(b, sizeof(b), "PERF");
+            for (int i = 0; i < 8; i++) l += snprintf(b + l, sizeof(b) - l, " %lu", (unsigned long)s_refr_ms[(s_refr_n + i) & 7]);
+            b[l++] = '\n';
+            send(b, l);
+        }
         else if (!strcmp(line, "dark 1") || !strcmp(line, "dark 0")) {
             if (bsp_display_lock(portMAX_DELAY)) {
                 sw_app_force_dark(line[5] == '1');
@@ -140,5 +167,11 @@ static void debug_task(void *arg)
 void sw_debug_start(void)
 {
     if (!uart_is_driver_installed(UART_NUM_0)) uart_driver_install(UART_NUM_0, 1024, 4096, 0, NULL, 0);
+    if (bsp_display_lock(portMAX_DELAY)) {
+        lv_display_t *d = lv_display_get_default();
+        lv_display_add_event_cb(d, refr_cb, LV_EVENT_REFR_START, NULL);
+        lv_display_add_event_cb(d, refr_cb, LV_EVENT_REFR_READY, NULL);
+        bsp_display_unlock();
+    }
     xTaskCreate(debug_task, "debug", 6144, NULL, 2, NULL);
 }
