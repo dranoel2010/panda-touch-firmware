@@ -7,6 +7,8 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESP32S3_DATA_CACHE_64KB=y
 CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+# Befehls-Cache 32 statt 16 KB: der Zeichencode ist groß und läuft aus dem Flash
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
 # LVGL über Kconfig, kein lv_conf.h
 CONFIG_LV_CONF_SKIP=y
 # Eigene Partitionstabelle: 8 MB App (Schriften + Schattenmasken der Soft-White-Oberfläche)
@@ -23,13 +25,16 @@ CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_LV_USE_SNAPSHOT=y
 # Leistung: optimiert übersetzen (Standard wäre -Og)
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
-# eine Zeichen-Einheit: zwei belasten den PSRAM so, dass das Display verrutscht
-CONFIG_LV_OS_FREERTOS=y
+# eine Zeichen-Einheit (zwei belasten den PSRAM so, dass das Display verrutscht), und die zeichnet direkt
+# im Oberflächen-Task: ein eigener Zeichen-Thread kostete je Zeichenauftrag zwei Taskwechsel
+CONFIG_LV_OS_NONE=y
 CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
-# Display stabil (kein Verrutschen bei viel Zeichenarbeit): größerer Zwischenpuffer,
-# bei verpasstem Nachschub am nächsten Bildbeginn neu ausrichten
+# Display stabil (kein Verrutschen bei viel Zeichenarbeit): größerer Zwischenpuffer.
+# Kein erzwungener Neustart der Übertragung in jedem Bild: mit Zwischenpuffer richtet der Treiber
+# nur bei wirklich verpasstem Nachschub neu aus; der Dauer-Neustart ließ Bilder um 20 Zeilen springen,
+# wenn der Nachschub am Bildende knapp kam
 CONFIG_BSP_LCD_RGB_BOUNCE_BUF_HEIGHT=20
-CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=n
 # Drucker-Anbindung: Der P1S hat ein selbst signiertes Zertifikat (nur lokales Netz)
 CONFIG_ESP_TLS_INSECURE=y
 CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y

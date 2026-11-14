@@ -52,7 +52,9 @@ NODE_PATH=<node_modules mit puppeteer-core> node extract.js && node layers.js &&
   (z. B. `./sim_live bild.ppm dr:zustand=RUNNING dr:prozent=42 nav:home`); gesendete Befehle werden ausgegeben.
 - `python tools/sim/regress.py` vergleicht alle Bildschirme Pixel für Pixel mit dem Prototyp,
   `--device` macht das Gleiche auf dem angeschlossenen Gerät (Debug-Kanal, Licht bleibt aus).
-- Debug-Kanal über USB (115200 Baud): `snap`, `fb0`, `go <aktion>`, `dark 1`, `perf`, `prof <n>` – siehe `main/sw_debug.c`.
+- Debug-Kanal über USB (115200 Baud): `snap`, `fb0`, `go <aktion>`, `dark 1`, `perf`, `prof <n>`, `mem` – siehe `main/sw_debug.c`.
+- `tools/diag`: Mess-Build, der im Display-Treiber mitzählt, ob der Bildnachschub pünktlich kommt (Flackern/Springen
+  objektiv nachweisen), dazu ein Dauerlast-Skript.
 
 ## Bauen
 GitHub Actions baut bei jedem Push `firmware.bin` (Artefakt „firmware“). Lokal mit Docker:
@@ -77,3 +79,6 @@ mit 230400 Baud). Zurückspielen: `write_flash 0 pandatouch_original.bin`.
 - v0.3.0: Drucker-Anbindung (WLAN, MQTT), Display stabil (Streifen im internen RAM, 18 MHz)
 - v0.4.0: Druckdateien und Druckstart vom Gerät, HMS-Meldungen, Material am AMS, Spulenfarben,
   Drucker-Suche per SSDP, Wächter gegen Hänger; Bildschirm wacht bei Druckende/Fehler auf
+- v0.4.1: Flackern beim Bedienen behoben (Display-Unterbrechungen auf Kern 1, kein Dauer-Neustart der Übertragung),
+  Bildaufbau gut doppelt so schnell (Befehls-Cache 32 KB, Zeichnen direkt im Oberflächen-Task, größere Schattenkacheln,
+  verdeckte Schattenteile werden übersprungen), 48 KB mehr interner RAM frei

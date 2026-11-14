@@ -3,10 +3,12 @@
  *   snap           -> aktuellen Bildschirm rendern und RLE-komprimiert senden
  *   go <aktion>    -> Aktion wie ein Antippen auslösen (z. B. "go nav:menu")
  *   dark 1|0       -> Hintergrundlicht zwangsweise aus / wieder normal
+ *   lcd            -> Pünktlichkeit des Display-Nachschubs (nur im Mess-Build, siehe tools/diag)
  * Damit lässt sich die Oberfläche prüfen, ohne den Bildschirm einzuschalten.
  * Gegenstück am Mac: tools/sim/device_snap.py
  */
 #include <stdio.h>
+#include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
 #include "bsp/esp-bsp.h"
@@ -196,11 +198,13 @@ static void debug_task(void *arg)
             }
             send("OK\n", 3);
         }
-        else if (!strcmp(line, "mem")) {   /* freier Speicher: intern / PSRAM / größter interner Block */
+        else if (!strcmp(line, "mem")) {   /* freier Speicher: intern / PSRAM / größter interner Block / Stapelreserve der Oberfläche */
             char b[96];
-            int l = snprintf(b, sizeof(b), "MEM %u %u %u\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+            TaskHandle_t ui = xTaskGetHandle("taskLVGL");
+            int l = snprintf(b, sizeof(b), "MEM %u %u %u %u\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-                             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+                             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                             ui ? (unsigned)uxTaskGetStackHighWaterMark(ui) : 0);
             send(b, l);
         }
         else if (!strcmp(line, "bench")) {   /* PSRAM-Durchsatz: Bildspeicher kopieren/füllen (Bild ist danach kurz falsch) */
@@ -221,6 +225,32 @@ static void debug_task(void *arg)
                 free(tmp);
                 l = snprintf(b, sizeof(b), "BENCH copy %lld us, fill %lld us, read %lld us (768 KB)\n", t1 - t0, t2 - t1, t3 - t2);
             } else l = snprintf(b, sizeof(b), "BENCH err\n");
+            send(b, l);
+        }
+        else if (!strcmp(line, "lcd")) {   /* nur im Mess-Build (gepatchter Treiber): Pünktlichkeit des Display-Nachschubs */
+            typedef struct {
+                uint32_t n_isr, max_dur, max_lat, max_latdur, n_half, n_glitch, n_desync, n_frames, p_cyc, p_meas, core;
+                uint64_t sum_dur;
+                uint32_t glitch_k[4];
+                int32_t vs_min, vs_max;
+                uint32_t hist[5], desync_pos;
+            } lcd_diag_t;
+            extern lcd_diag_t lcd_diag __attribute__((weak));
+            char b[400];
+            int l;
+            if (!&lcd_diag) l = snprintf(b, sizeof(b), "LCD keine Messung in diesem Build\n");
+            else {
+                lcd_diag_t d = lcd_diag;
+                memset(&lcd_diag, 0, offsetof(lcd_diag_t, p_cyc));
+                lcd_diag.sum_dur = 0;
+                memset(lcd_diag.hist, 0, sizeof(lcd_diag.hist));
+                l = snprintf(b, sizeof(b), "LCD kern=%u bilder=%u P=%u/%u us kopie=%u/%u us spaet_max=%u us spaet+kopie=%u us halb=%u STOER=%u (k=%u,%u,%u,%u) versatz=%u(pos %u) vsync=%d..%d us kopie<150/300/600/900/mehr=%u/%u/%u/%u/%u\n",
+                             (unsigned)d.core, (unsigned)d.n_frames, (unsigned)(d.p_cyc / 240), (unsigned)(d.p_meas / 240),
+                             (unsigned)(d.n_isr ? d.sum_dur / d.n_isr / 240 : 0), (unsigned)(d.max_dur / 240), (unsigned)(d.max_lat / 240),
+                             (unsigned)(d.max_latdur / 240), (unsigned)d.n_half, (unsigned)d.n_glitch, (unsigned)d.glitch_k[0], (unsigned)d.glitch_k[1],
+                             (unsigned)d.glitch_k[2], (unsigned)d.glitch_k[3], (unsigned)d.n_desync, (unsigned)d.desync_pos, (int)(d.vs_min / 240), (int)(d.vs_max / 240),
+                             (unsigned)d.hist[0], (unsigned)d.hist[1], (unsigned)d.hist[2], (unsigned)d.hist[3], (unsigned)d.hist[4]);
+            }
             send(b, l);
         }
         else if (!strcmp(line, "perf")) {
@@ -303,7 +333,7 @@ void sw_debug_start(void)
         bsp_display_unlock();
     }
     /* Stack im PSRAM: der interne RAM ist mit WLAN knapp (der Task schreibt nie in den Flash) */
-    if (xTaskCreatePinnedToCoreWithCaps(debug_task, "debug", 6144, NULL, 2, NULL, tskNO_AFFINITY, MALLOC_CAP_SPIRAM) != pdPASS) ESP_LOGE("debug", "Task nicht startbar");
+    if (xTaskCreatePinnedToCoreWithCaps(debug_task, "debug", 12288, NULL, 2, NULL, tskNO_AFFINITY, MALLOC_CAP_SPIRAM) != pdPASS) ESP_LOGE("debug", "Task nicht startbar");
     ESP_LOGI("debug", "intern frei %u (größter Block %u), PSRAM frei %u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));

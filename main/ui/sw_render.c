@@ -44,6 +44,8 @@ typedef struct piece_cache {
     uint8_t empty[9];   /* Stück vollständig transparent -> gar nicht zeichnen */
     lv_area_t trim[9];  /* nicht-transparenter Bereich innerhalb des Stücks */
     lv_image_dsc_t sub[9];
+    lv_image_dsc_t big[9];  /* gekachelte Stücke vervielfacht (siehe big_tile) */
+    uint8_t big_tried[9];
     struct piece_cache *next;
 } piece_cache_t;
 static piece_cache_t *s_pieces;
@@ -121,9 +123,43 @@ static void draw_piece(lv_layer_t *layer, const lv_draw_image_dsc_t *d, const lv
     layer->_clip_area = save;
 }
 
+/* Gekachelte Stücke sind in der Datei nur 1–32 px breit/hoch. So gezeichnet, braucht ein großer Schatten
+ * hunderte bis über tausend einzelne Zeichenaufträge – das kostete rund die Hälfte der Zeit eines Bildaufbaus.
+ * Deshalb wird das Stück einmal zu einer größeren Kachel vervielfacht (ganze Wiederholungen, also pixelgleich). */
+#define BIG_TILE_W 96
+#define BIG_TILE_H 64
+static const lv_image_dsc_t *big_tile(piece_cache_t *pc, int i, const lv_image_dsc_t *src, bool tx, bool ty)
+{
+    if (pc->big[i].data) return &pc->big[i];
+    if (pc->big_tried[i]) return src;
+    pc->big_tried[i] = 1;
+    int32_t w = src->header.w, h = src->header.h;
+    int32_t nx = tx && w < BIG_TILE_W ? (BIG_TILE_W + w - 1) / w : 1;
+    int32_t ny = ty && h < BIG_TILE_H ? (BIG_TILE_H + h - 1) / h : 1;
+    if (nx == 1 && ny == 1) return src;
+    int32_t W = w * nx, H = h * ny;
+    uint8_t *d = GRAD_ALLOC((size_t)W * H);
+    if (!d) return src;
+    for (int32_t y = 0; y < H; y++) {
+        const uint8_t *sr = src->data + (y % h) * src->header.stride;
+        uint8_t *dr = d + y * W;
+        for (int32_t x = 0; x < nx; x++) memcpy(dr + x * w, sr, w);
+    }
+    lv_image_dsc_t *b = &pc->big[i];
+    *b = *src;
+    b->header.w = W;
+    b->header.h = H;
+    b->header.stride = W;
+    b->data = d;
+    b->data_size = (uint32_t)W * H;
+    return b;
+}
+
 /* Maske in Zielgröße W×H ab (x,y) zeichnen */
+/* cover: Bereich, den die deckende Fläche der Box gleich danach vollständig übermalt (oder NULL).
+ * Ein äußerer Schatten liegt zum größten Teil darunter – dort zu zeichnen wäre verschenkte Zeit. */
 static void draw_mask(lv_layer_t *layer, const sw_mask_t *m, int32_t x, int32_t y, int32_t W, int32_t H,
-                      lv_color_t color, lv_opa_t opa)
+                      lv_color_t color, lv_opa_t opa, const lv_area_t *cover)
 {
     if (opa <= LV_OPA_MIN) return;
     piece_cache_t *pc = pieces_for(m);
@@ -159,13 +195,34 @@ static void draw_mask(lv_layer_t *layer, const sw_mask_t *m, int32_t x, int32_t 
                 sub->data_size = img->header.stride * sub->header.h;
             }
             img = sub;
+            const lv_image_dsc_t *tile = (k == 1 || r == 1) ? big_tile(pc, r * 3 + k, sub, k == 1, r == 1) : sub;
             lv_draw_image_dsc_t d;
             lv_draw_image_dsc_init(&d);
-            d.src = img;
+            d.src = tile;
             d.recolor = color;
             d.recolor_opa = LV_OPA_COVER;
             d.opa = opa;
-            draw_piece(layer, &d, img, &a, k == 1, r == 1);
+            if (cover) {
+                /* nur zeichnen, was neben der deckenden Fläche übrig bleibt (per Beschnitt, die Kacheln
+                 * behalten so ihre Lage) */
+                lv_area_t in;
+                if (area_intersect(&in, &a, cover)) {
+                    const lv_area_t rest[4] = {
+                        { a.x1, a.y1, a.x2, in.y1 - 1 }, { a.x1, in.y2 + 1, a.x2, a.y2 },
+                        { a.x1, in.y1, in.x1 - 1, in.y2 }, { in.x2 + 1, in.y1, a.x2, in.y2 },
+                    };
+                    lv_area_t save = layer->_clip_area, cl;
+                    for (int i = 0; i < 4; i++) {
+                        if (rest[i].x2 < rest[i].x1 || rest[i].y2 < rest[i].y1) continue;
+                        if (!area_intersect(&cl, &save, &rest[i])) continue;
+                        layer->_clip_area = cl;
+                        draw_piece(layer, &d, tile, &a, k == 1, r == 1);
+                    }
+                    layer->_clip_area = save;
+                    continue;
+                }
+            }
+            draw_piece(layer, &d, tile, &a, k == 1, r == 1);
         }
     }
 }
@@ -198,12 +255,17 @@ static void grad_points(int32_t w, int32_t h, int angle, lv_point_t *s, lv_point
 static void draw_shadows(lv_layer_t *layer, const sw_style_t *st, const lv_area_t *c, bool inset)
 {
     if (sw_prof_skip & 1) return;
+    /* Deckt die Fläche der Box? Dann übermalt sie alles innerhalb der Box abseits der runden Ecken:
+     * den Streifen zwischen den Eckradien in voller Höhe. */
+    lv_area_t cover = { c->x1 + st->radius, c->y1, c->x2 - st->radius, c->y2 };
+    bool deckt = !inset && !(sw_prof_skip & 2) && cover.x1 <= cover.x2 &&
+                 ((st->bg == SW_BG_COLOR && st->o1 == 255) || (st->bg == SW_BG_LINEAR && st->o1 == 255 && st->o2 == 255));
     for (int i = st->n_shadows - 1; i >= 0; i--) {   /* CSS: erster Schatten liegt oben */
         const sw_shadow_t *sh = &st->shadows[i];
         if (sh->inset != inset) continue;
         int32_t w = lv_area_get_width(c), h = lv_area_get_height(c);
         draw_mask(layer, sh->mask, c->x1 + sh->mask->ox, c->y1 + sh->mask->oy,
-                  w + sh->mask->grow_w, h + sh->mask->grow_h, sh->color, sh->opa);
+                  w + sh->mask->grow_w, h + sh->mask->grow_h, sh->color, sh->opa, deckt ? &cover : NULL);
     }
 }
 
@@ -363,7 +425,7 @@ static void draw_switch_knob(lv_layer_t *layer, lv_obj_t *obj, const lv_area_t *
     k.x2 = k.x1 + 39;
     k.y2 = k.y1 + 39;
     const sw_mask_t *m = sw_switch_knob_mask();
-    if (m) draw_mask(layer, m, k.x1 + m->ox, k.y1 + m->oy, 40 + m->grow_w, 40 + m->grow_h, lv_color_hex(0x78847a), 0x70);
+    if (m) draw_mask(layer, m, k.x1 + m->ox, k.y1 + m->oy, 40 + m->grow_w, 40 + m->grow_h, lv_color_hex(0x78847a), 0x70, NULL);
     static const sw_style_t knob = { SW_BG_LINEAR, LV_COLOR_MAKE(0xfa, 0xfa, 0xf7), LV_COLOR_MAKE(0xe8, 0xe8, 0xe4),
                                      255, 255, 140, 20, 0, 0, LV_COLOR_MAKE(0, 0, 0), 0, 0, NULL,
                                      LV_COLOR_MAKE(0, 0, 0), 0, 255 };

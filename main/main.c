@@ -21,7 +21,7 @@
 
 void sw_debug_start(void);
 
-#define VERSION "0.4.0"
+#define VERSION "0.4.1"
 
 static const char *TAG = "panda";
 
@@ -97,13 +97,14 @@ static lv_display_t *anzeige_starten(void)
 {
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     port_cfg.task_affinity = 1;   /* Oberfläche auf Kern 1, WLAN/MQTT/TLS laufen auf Kern 0 */
+    port_cfg.task_stack = 12288;  /* gezeichnet wird direkt in diesem Task (kein eigener Zeichen-Thread) */
     if (lvgl_port_init(&port_cfg) != ESP_OK) return NULL;
     esp_lcd_panel_handle_t panel = NULL;
     if (panel_neu(&panel) != ESP_OK) return NULL;
     const lvgl_port_display_cfg_t disp_cfg = {
         .panel_handle = panel,
         .buffer_size = ANZEIGE_DIREKT ? BSP_LCD_H_RES * BSP_LCD_V_RES : BSP_LCD_H_RES * 40,
-        .double_buffer = !ANZEIGE_DIREKT,
+        .double_buffer = false,   /* die Übergabe kopiert sofort, ein zweiter Streifen brächte nichts (spart 64 KB internen RAM) */
         .hres = BSP_LCD_H_RES,
         .vres = BSP_LCD_V_RES,
         .color_format = LV_COLOR_FORMAT_RGB565,
@@ -164,11 +165,27 @@ static void waechter(void *arg)
     }
 }
 
+/* Das Display wird auf Kern 1 eingerichtet: Seine Unterbrechungen (Nachschub der Bilddaten alle 0,9 ms)
+ * laufen auf dem Kern, der sie anlegt. Auf Kern 0 sperren WLAN und TLS die Unterbrechungen zeitweise
+ * zu lange – dann kommt der Nachschub zu spät und das Bild zuckt. */
+#ifndef ANZEIGE_KERN
+#define ANZEIGE_KERN 1
+#endif
+static lv_display_t *anzeige;
+static void anzeige_task(void *arg)
+{
+    anzeige = anzeige_starten();
+    xTaskNotifyGive((TaskHandle_t)arg);
+    vTaskDelete(NULL);
+}
+
 void app_main(void)
 {
     nvs_starten();
 
-    lv_display_t *disp = anzeige_starten();
+    if (xTaskCreatePinnedToCore(anzeige_task, "anzeige", 6144, xTaskGetCurrentTaskHandle(), 5, NULL, ANZEIGE_KERN) == pdPASS)
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    lv_display_t *disp = anzeige;
     assert(disp);
     bsp_display_brightness_set(0);   /* dunkel starten */
     const esp_timer_create_args_t lt = { .callback = licht_schritt, .name = "licht" };

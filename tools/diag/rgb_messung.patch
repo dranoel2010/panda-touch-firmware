@@ -1,0 +1,81 @@
+--- a/components/esp_lcd/rgb/esp_lcd_panel_rgb.c
++++ b/components/esp_lcd/rgb/esp_lcd_panel_rgb.c
+@@ -48,6 +48,18 @@
+ #include "hal/cache_ll.h"
+ #include "hal/color_hal.h"
+ #include "rgb_lcd_rotation_sw.h"
++#include "esp_cpu.h"
++
++/* DIAGNOSE (nur Mess-Build): Pünktlichkeit des Bounce-Nachschubs */
++typedef struct {
++    uint32_t n_isr, max_dur, max_lat, max_latdur, n_half, n_glitch, n_desync, n_frames, p_cyc, p_meas, core;
++    uint64_t sum_dur;
++    uint32_t glitch_k[4];
++    int32_t vs_min, vs_max;
++    uint32_t hist[5], desync_pos;
++} lcd_diag_t;
++lcd_diag_t lcd_diag;
++static uint32_t diag_t0[64], diag_dur[64], diag_vs;
+ 
+ // hardware issue workaround
+ #if CONFIG_IDF_TARGET_ESP32S3
+@@ -960,7 +972,50 @@
+         int bb = rgb_panel->bb_eof_count % RGB_LCD_PANEL_BOUNCE_BUF_NUM;
+         rgb_panel->bb_eof_count++;
+         portEXIT_CRITICAL_ISR(&rgb_panel->spinlock);
++        uint32_t c0 = esp_cpu_get_cycle_count();
++        int diag_c = rgb_panel->bounce_pos_px / (rgb_panel->bb_size / (rgb_panel->fb_bits_per_pixel / 8));
+         need_yield = lcd_rgb_panel_fill_bounce_buffer(rgb_panel, rgb_panel->bounce_buffer[bb]);
++        uint32_t d = esp_cpu_get_cycle_count() - c0;
++        int nk = rgb_panel->expect_eof_count;
++        int k = (diag_c + nk - 2) % nk;
++        lcd_diag.core = esp_cpu_get_core_id();
++        lcd_diag.n_isr++;
++        lcd_diag.sum_dur += d;
++        if (d > lcd_diag.max_dur) lcd_diag.max_dur = d;
++        lcd_diag.hist[d < 150 * 240 ? 0 : d < 300 * 240 ? 1 : d < 600 * 240 ? 2 : d < 900 * 240 ? 3 : 4]++;
++        if (k >= 0 && k < 64 && k < nk) {
++            diag_t0[k] = c0;
++            diag_dur[k] = d;
++            if (k == nk - 1) {
++                if (!lcd_diag.p_cyc) {
++                    int ht = rgb_panel->timings.h_res + rgb_panel->timings.hsync_pulse_width + rgb_panel->timings.hsync_back_porch + rgb_panel->timings.hsync_front_porch;
++                    int lines = (rgb_panel->bb_size / (rgb_panel->fb_bits_per_pixel / 8)) / rgb_panel->timings.h_res;
++                    lcd_diag.p_cyc = (uint32_t)((uint64_t)lines * ht * 240000000ULL / rgb_panel->timings.pclk_hz);
++                }
++                uint32_t P = lcd_diag.p_cyc;
++                int32_t base = 0x7fffffff;
++                for (int i = 0; i < nk; i++) {
++                    int32_t v = (int32_t)(diag_t0[i] - diag_t0[0]) - (int32_t)(i * P);
++                    if (v < base) base = v;
++                }
++                uint32_t pm = (diag_t0[nk - 1] - diag_t0[0]) / (nk - 1);
++                if (!lcd_diag.p_meas || pm < lcd_diag.p_meas) lcd_diag.p_meas = pm;
++                for (int i = 0; i < nk - 2; i++) {
++                    uint32_t lat = (uint32_t)((int32_t)(diag_t0[i] - diag_t0[0]) - (int32_t)(i * P) - base);
++                    if (lat > lcd_diag.max_lat) lcd_diag.max_lat = lat;
++                    if (lat + diag_dur[i] > lcd_diag.max_latdur) lcd_diag.max_latdur = lat + diag_dur[i];
++                    if (lat > P / 2) lcd_diag.n_half++;
++                    if (lat > P || lat + diag_dur[i] > 2 * P) {
++                        if (lcd_diag.n_glitch < 4) lcd_diag.glitch_k[lcd_diag.n_glitch] = i;
++                        lcd_diag.n_glitch++;
++                    }
++                }
++                int32_t vs = (int32_t)(diag_vs - diag_t0[0]) - base;   /* VSYNC-ISR relativ zum Raster (negativ) */
++                if (!lcd_diag.n_frames || vs < lcd_diag.vs_min) lcd_diag.vs_min = vs;
++                if (!lcd_diag.n_frames || vs > lcd_diag.vs_max) lcd_diag.vs_max = vs;
++                lcd_diag.n_frames++;
++            }
++        }
+     } else {
+         // if not bounce buffer, the DMA EOF event means the end of a frame has been sent out to the LCD controller
+         if (rgb_panel->on_frame_buf_complete) {
+@@ -1126,6 +1181,8 @@
+ {
+     int bb_size_px = panel->bb_size / (panel->fb_bits_per_pixel / 8);
+     bool do_restart = false;
++    diag_vs = esp_cpu_get_cycle_count();
++    if (panel->bb_size && panel->bounce_pos_px != bb_size_px * 2) { lcd_diag.n_desync++; lcd_diag.desync_pos = panel->bounce_pos_px / bb_size_px; }
+ #if CONFIG_LCD_RGB_RESTART_IN_VSYNC
+     do_restart = true;
+ #else
